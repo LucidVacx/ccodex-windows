@@ -274,7 +274,7 @@ export function completeTool(
   }
   if (item.type === "mcpToolCall") return {
     ...item, status: isError ? "failed" : "completed", durationMs,
-    result: isError ? null : { content: output ? [{ type: "text", text: output } as JsonValue] : [], structuredContent: result as JsonValue ?? null, _meta: null },
+    result: isError ? null : { content: output ? [{ type: "text", text: output } as JsonValue] : [], structuredContent: null, _meta: null },
     error: isError ? { message: output || "Claude MCP tool failed." } : null,
   };
   if (item.type === "dynamicToolCall") return {

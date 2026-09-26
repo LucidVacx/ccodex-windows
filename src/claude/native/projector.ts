@@ -268,9 +268,11 @@ function projectTool(
   const result = completion?.record.toolUseResult;
   const item = sentMessageItem(started.item, started.state.input, result, peers);
   if (!completion) return item;
+  // An MCP tool's result is its content (text or blocks), not an object of fields.
+  const fields = typeof result === "object" && !Array.isArray(result) ? result : undefined;
   return completedToolItem(
     { state: { ...started.state, startedAtMs: Date.parse(record.timestamp) }, item },
-    { ...completion, record: { ...completion.record, toolUseResult: { ...result, duration_ms: typeof result?.duration_ms === "number" ? result.duration_ms : 0 } } },
+    { ...completion, record: { ...completion.record, toolUseResult: { ...fields, duration_ms: typeof fields?.duration_ms === "number" ? fields.duration_ms : 0 } } },
     cwd,
   );
 }

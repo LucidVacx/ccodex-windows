@@ -114,6 +114,24 @@ describe("native Claude transcript projector", () => {
     });
   });
 
+  it("keeps an MCP tool's text result whole (Claude records it as the content, not an object)", async () => {
+    const text = "Channel: #reports 🔑 key";
+    const user = prompt("prompt-1", null, "Read Slack", 1);
+    const tool = assistant("tool-record", user.uuid, "message-1", [{
+      type: "tool_use", id: "toolu-slack", name: "mcp__claude_ai_Slack__slack_read_channel", input: { channel_id: "C1" },
+    }], 2, "tool_use");
+    const result: UserRecord = {
+      type: "user", ...envelope("result-1", tool.uuid, 3),
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu-slack", content: [{ type: "text", text }] }] },
+      toolUseResult: text as unknown as Record<string, unknown>,
+    };
+    const projection = await projectTranscript({ sessionId: "session", path: "/tmp/session.jsonl", records: [user, tool, result] });
+    expect(projection.turns[0]!.items[1]).toMatchObject({
+      type: "mcpToolCall", server: "claude_ai_Slack", tool: "slack_read_channel", status: "completed",
+      result: { content: [{ type: "text", text }], structuredContent: null, _meta: null },
+    });
+  });
+
   it("keeps existing ids stable when non-chain state is appended", async () => {
     const records = conversation();
     const before = await projectTranscript({ sessionId: "session", path: "/tmp/session.jsonl", records });
