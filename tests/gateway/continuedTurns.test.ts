@@ -54,50 +54,63 @@ describe("Claude going on after an answer: a turn of its own, as history shows i
     expect(await historyTurns(threadId)).toEqual(live.map((turn) => ({ ...turn, status: "completed" })));
   });
 
-  it("ends the turn at Claude's answer while a background task runs; a new turn stays open and takes the task's wakeup", async () => {
+  it("runs a background command on past its turn, like stock's background terminal: its end completes it there, and the wakeup is a turn of its own", async () => {
     const threadId = await chat();
-    const answered = client.turn(threadId, "watch in background: sleep 1");
-    const first = await client.waitFor("turn/completed", (params) => params.threadId === threadId);
-    const holder = await client.waitFor("turn/started", (params) => params.threadId === threadId && params.turn.id !== first.turn.id);
-    expect(holder.turn.id).toMatch(/:0:continued$/u);
-    const open = await historyTurns(threadId);
-    expect(open.map((turn) => [turn.id, turn.status])).toEqual([[first.turn.id, "completed"], [holder.turn.id, "inProgress"]]);
-    // Desktop pages from the open turn, which Claude has written nothing of yet.
-    const page = await client.request("thread/turns/list", { threadId, cursor: JSON.stringify({ turnId: holder.turn.id, includeAnchor: true }), limit: 5, sortDirection: "desc" });
-    expect(page.data.map((turn: { id: string }) => turn.id)).toEqual([holder.turn.id, first.turn.id]);
-    await client.request("thread/items/list", { threadId, turnId: holder.turn.id, limit: 100, sortDirection: "desc" });
-    await answered;
+    const first = await client.turn(threadId, "watch in background: sleep 1");
+    const command = (params: any) => params.item.type === "commandExecution" && params.turnId === first.turn.id;
+    expect(client.notifications("item/completed", threadId).filter((message) => command(message.params))).toEqual([]);
+    expect(client.notifications("thread/status/changed", threadId).at(-1)!.params.status.type).toBe("idle");
+    const running = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(running.thread.turns.map((turn: any) => [turn.id, turn.status])).toEqual([[first.turn.id, "completed"]]);
+    expect(running.thread.turns[0].items.find((item: any) => item.type === "commandExecution")).toMatchObject({ status: "inProgress", processId: "bg1" });
+    expect((await client.request("thread/backgroundTerminals/list", { threadId })).data).toMatchObject([{ processId: "bg1", command: "sleep 1" }]);
+    const ended = await client.waitFor("item/completed", command, 3_000);
+    expect(ended.item).toMatchObject({ status: "completed", processId: "bg1", exitCode: 0, aggregatedOutput: "BG-OUT\n" });
+    const wakeup = await client.waitFor("turn/started", (params) => params.threadId === threadId && params.turn.id !== first.turn.id, 3_000);
+    expect(wakeup.turn.id).toMatch(/:0:continued$/u);
+    await client.waitFor("turn/completed", (params) => params.turn.id === wakeup.turn.id, 3_000);
     const live = liveTurns(threadId);
-    expect(live.map((turn) => turn.id)).toEqual([first.turn.id, holder.turn.id]);
-    expect(live[0]!.items.at(-1)).toBe("agentMessage:watching");
+    expect(live.map((turn) => turn.id)).toEqual([first.turn.id, wakeup.turn.id]);
+    expect(live[0]!.items).toEqual(["userMessage:", "agentMessage:watching", "commandExecution:"]);
     expect(live[1]!.items).toEqual(["agentMessage:the task finished"]);
-    expect(await historyTurns(threadId)).toEqual(live.map((turn) => ({ ...turn, status: "completed" })));
+    const history = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(history.thread.turns[0].items.find((item: any) => item.type === "commandExecution")).toMatchObject({ status: "completed", processId: "bg1", exitCode: 0, aggregatedOutput: "BG-OUT\n" });
+    const page = await client.request("thread/turns/list", { threadId, limit: 5, sortDirection: "desc" });
+    expect(page.data.map((turn: { id: string }) => turn.id)).toEqual([wakeup.turn.id, first.turn.id]);
   });
 
-  it("starts a prompt sent while Claude only waits on a background task at once, as a turn of its own", async () => {
+  it("starts a prompt sent while a background command runs at once, as a turn of its own", async () => {
     fakeClaude.backgroundMs = 3_000;
     const threadId = await chat();
-    void client.turn(threadId, "watch in background: sleep 3");
-    const first = await client.waitFor("turn/completed", (params) => params.threadId === threadId);
-    const holder = await client.waitFor("turn/started", (params) => params.threadId === threadId && params.turn.id !== first.turn.id);
+    const first = await client.turn(threadId, "watch in background: sleep 3");
     await client.request("thread/queue/add", { threadId, input: [{ type: "text", text: "and meanwhile?", text_elements: [] }] });
     expect((await client.request("thread/queue/list", { threadId })).data).toEqual([]);
-    await client.waitFor("turn/completed", (params) => params.turn.id === holder.turn.id, 500);
-    const next = await client.waitFor("turn/started", (params) => params.threadId === threadId && ![first.turn.id, holder.turn.id].includes(params.turn.id), 500);
+    const next = await client.waitFor("turn/started", (params) => params.threadId === threadId && params.turn.id !== first.turn.id, 500);
     const prompt = await client.waitFor("item/completed", (params) => params.turnId === next.turn.id && params.item.type === "userMessage", 500);
     expect(prompt.item.content[0].text).toBe("and meanwhile?");
     expect(fakeClaude.calls.some((call) => call.method === "stopTask")).toBe(false);
   });
 
-  it("stops the background task with Claude when the waiting turn is stopped", async () => {
+  it("stops Claude's background commands from Desktop's background terminals panel: each ends as stopped in its turn", async () => {
     fakeClaude.backgroundMs = 3_000;
     const threadId = await chat();
-    void client.turn(threadId, "watch in background: sleep 3");
-    const first = await client.waitFor("turn/completed", (params) => params.threadId === threadId);
-    const holder = await client.waitFor("turn/started", (params) => params.threadId === threadId && params.turn.id !== first.turn.id);
-    await client.request("turn/interrupt", { threadId, turnId: holder.turn.id });
-    const stopped = await client.waitFor("turn/completed", (params) => params.turn.id === holder.turn.id, 500);
-    expect(stopped.turn.status).toBe("interrupted");
-    expect(fakeClaude.calls.filter((call) => ["interrupt", "stopTask"].includes(call.method))).toEqual([{ method: "interrupt", args: [] }, { method: "stopTask", args: ["bg1"] }]);
+    const first = await client.turn(threadId, "watch in background: sleep 3");
+    await client.request("thread/backgroundTerminals/clean", { threadId });
+    expect(fakeClaude.calls.filter((call) => call.method === "stopTask")).toEqual([{ method: "stopTask", args: ["bg1"] }]);
+    const ended = await client.waitFor("item/completed", (params) => params.item.type === "commandExecution" && params.turnId === first.turn.id, 500);
+    expect(ended.item).toMatchObject({ status: "failed", processId: "bg1", exitCode: null });
+  });
+
+  it("shows Claude stopping its background command on the command (stock's Ctrl-C), not as a call of its own", async () => {
+    const threadId = await chat();
+    const turn = await client.turn(threadId, "stop in background: sleep 9");
+    const interaction = client.notifications("item/commandExecution/terminalInteraction", threadId).map((message) => message.params);
+    expect(interaction).toMatchObject([{ turnId: turn.turn.id, processId: "bg1", stdin: "\u0003" }]);
+    const live = liveTurns(threadId);
+    expect(live[0]!.items).toEqual(["userMessage:", "commandExecution:", "agentMessage:stopped"]);
+    const history = await client.request("thread/read", { threadId, includeTurns: true });
+    const items = history.thread.turns[0].items;
+    expect(items.map((item: any) => item.type)).toEqual(["userMessage", "commandExecution", "agentMessage"]);
+    expect(items[1]).toMatchObject({ status: "failed", processId: "bg1", exitCode: null });
   });
 });

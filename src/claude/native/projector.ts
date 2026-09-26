@@ -6,9 +6,13 @@ import { CODEX_MCP_TOOLS, codexMcpItems } from "../codexRollout.js";
 import { normalizeClaudeModelIdentifier } from "../modelSelection.js";
 import { NO_PEERS, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type PeerDirectory, type Peers } from "../peers.js";
 import {
+  endedBackground,
   projectToolCompletion,
   startTool,
+  stoppedCommand,
+  taskNotification,
   type ActiveTool,
+  type BackgroundEnd,
 } from "../toolMapper.js";
 import { selectHistory, type SelectedHistory } from "./history.js";
 import { ANSWER_CHARS, assistantBlockItemId, continuationTurnId } from "./ids.js";
@@ -51,7 +55,23 @@ export interface ProjectTranscriptInput {
   readonly continues?: boolean;
   /** The leaf lies past a later compaction: see `selectHistory`. */
   readonly physical?: boolean;
+  /** How background commands ended further on in the transcript than `records` reach (a page of history). */
+  readonly backgroundEnds?: ReadonlyMap<string, BackgroundEnd>;
 }
+
+/** How background commands ended, by task id: Claude's task notifications and its stops of them (TaskStop). */
+export function backgroundEnds(records: readonly TranscriptRecord[], ends = new Map<string, BackgroundEnd>()): Map<string, BackgroundEnd> {
+  for (const record of records) {
+    if (record.type !== "user") continue;
+    const atMs = Date.parse(record.timestamp);
+    const notified = record.origin?.kind === "task-notification" ? taskNotification(userText(record), atMs) : undefined;
+    if (notified) ends.set(notified.taskId, notified.end);
+    const stopped = stoppedCommand(record.toolUseResult);
+    if (stopped) ends.set(stopped, { status: "stopped", summary: "", atMs });
+  }
+  return ends;
+}
+
 
 /** Chain records bounding a projected turn: `messageUuid` is the native rollback anchor. */
 export interface TurnProviderBoundary {
@@ -262,6 +282,7 @@ function projectTool(
   threadId: string,
   completions: ReadonlyMap<string, ToolCompletion>,
   peers: Peers,
+  ends: ReadonlyMap<string, BackgroundEnd>,
 ): ThreadItem {
   const started = activeTool(blockIndex, block, cwd, threadId, record.timestamp);
   const completion = completions.get(block.id);
@@ -270,11 +291,19 @@ function projectTool(
   if (!completion) return item;
   // An MCP tool's result is its content (text or blocks), not an object of fields.
   const fields = typeof result === "object" && !Array.isArray(result) ? result : undefined;
-  return completedToolItem(
-    { state: { ...started.state, startedAtMs: Date.parse(record.timestamp) }, item },
+  const startedAtMs = Date.parse(record.timestamp);
+  const completed = completedToolItem(
+    { state: { ...started.state, startedAtMs }, item },
     { ...completion, record: { ...completion.record, toolUseResult: { ...fields, duration_ms: typeof fields?.duration_ms === "number" ? fields.duration_ms : 0 } } },
     cwd,
   );
+  // A background command runs on past its turn: it ends as its task notification (or a stop) tells. With neither, its
+  // Claude process ended first (a running one shows live).
+  const taskId = typeof fields?.backgroundTaskId === "string" ? fields.backgroundTaskId : undefined;
+  if (!taskId || completed.type !== "commandExecution") return completed;
+  const background = { ...completed, processId: taskId };
+  const end = ends.get(taskId);
+  return end ? endedBackground(background, end, startedAtMs) : { ...background, status: "failed", exitCode: null, aggregatedOutput: null };
 }
 
 /** A started tool item completed by its tool_result; shared by history projection and the live stream. */
@@ -366,6 +395,7 @@ function assistantItems(
   toolResponses: ReadonlySet<string>,
   codexCalls: Map<string, number>,
   peers: Peers,
+  ends: ReadonlyMap<string, BackgroundEnd>,
 ): ThreadItem[] {
   let reasoning: Extract<ThreadItem, { type: "reasoning" }> | undefined;
   return responseBlocks(records).flatMap(({ record, block, index, id }): ThreadItem[] => {
@@ -387,9 +417,12 @@ function assistantItems(
     }
     if (["tool_use", "server_tool_use", "mcp_tool_use"].includes(String(block.type))
       && typeof block.id === "string" && typeof block.name === "string") {
-      const item = projectTool(block as unknown as ToolUseBlock, index, record, cwd, threadId, completions, peers);
+      const completion = completions.get(block.id);
+      // Stopping a background command shows on the command (stock's Ctrl-C), not as a call of its own.
+      if (stoppedCommand(completion?.record.toolUseResult)) return [];
+      const item = projectTool(block as unknown as ToolUseBlock, index, record, cwd, threadId, completions, peers, ends);
       if (!CODEX_MCP_TOOLS.has(block.name)) return [item];
-      const result = completions.get(block.id)?.block.content;
+      const result = completion?.block.content;
       return [item, ...codexMcpItems(block.id, object(block.input) ?? {}, result === undefined ? undefined : outputText(result), codexCalls)];
     }
     return [];
@@ -515,6 +548,7 @@ function projectTurns(
   directory: PeerDirectory,
   continues: boolean,
   path: string,
+  ends: ReadonlyMap<string, BackgroundEnd>,
 ): Turn[] {
   const starts = turnStarts(records, subagentPromptUuid, steered);
   const completions = toolCompletions(records);
@@ -546,7 +580,7 @@ function projectTurns(
         const messageId = record.message.id!;
         if (projectedResponses.has(messageId)) continue;
         projectedResponses.add(messageId);
-        items.push(...assistantItems(responses.get(messageId)!, cwd, threadId, completions, toolResponses, codexCalls, peers));
+        items.push(...assistantItems(responses.get(messageId)!, cwd, threadId, completions, toolResponses, codexCalls, peers, ends));
       }
       else if (record.type === "user" && peerOrigin(record.origin)) {
         items.push(peerMessageItem(record.uuid, peerOrigin(record.origin)!, userText(record), peers));
@@ -687,7 +721,8 @@ export async function projectTranscript(input: ProjectTranscriptInput): Promise<
     : []));
   const header = input.header ?? summarizeTranscript(rawRecords, input.subagent?.promptRecordUuid);
   const steered = steeredPrompts(rawRecords);
-  const turns = projectTurns(selected, header.cwd, input.sessionId, input.subagent?.promptRecordUuid, steered, input.peers ?? NO_PEERS.directory, input.continues ?? false, input.path);
+  const turns = projectTurns(selected, header.cwd, input.sessionId, input.subagent?.promptRecordUuid, steered, input.peers ?? NO_PEERS.directory, input.continues ?? false, input.path,
+    backgroundEnds(rawRecords, new Map(input.backgroundEnds)));
   const nickname = input.subagent?.nickname ?? null;
   const parentThreadId = input.parentThreadId ?? null;
   const status: Thread["status"] = turns.at(-1)?.status === "inProgress"

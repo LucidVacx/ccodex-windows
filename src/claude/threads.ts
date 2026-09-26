@@ -8,7 +8,7 @@ import type { Connection } from "../gateway/connection.js";
 import type { Gateway } from "../gateway/server.js";
 import type { Logger } from "../log.js";
 import { packageVersion } from "../management/commands.js";
-import { invalidParams, invalidRequest, requestedModel, type JsonObject, type Thread, type Turn } from "../protocol/codex.js";
+import { invalidParams, invalidRequest, requestedModel, type JsonObject, type Thread, type ThreadItem, type Turn } from "../protocol/codex.js";
 import { anchorCursor, historyCursors, paginateItems, paginateTurns, startedTurn } from "../protocol/turnPagination.js";
 import { normalizeUserInput } from "./inputMapper.js";
 import { claudeModelLabel, modelCatalogValue, normalizeClaudeModelIdentifier } from "./modelSelection.js";
@@ -394,13 +394,7 @@ export class ClaudeThreads {
       if (!session) throw invalidParams(`thread not found: ${threadId}`);
       return { thread: this.decorate(this.freshThread(session)), turns: session.liveTurn() ? [session.liveTurn()!] : [] };
     }
-    let turns = [...projection.turns];
-    const live = session?.liveTurn();
-    if (live) {
-      const index = turns.findIndex((turn) => turn.id === live.id);
-      if (index >= 0) turns = [...turns.slice(0, index), { ...turns[index]!, status: "inProgress", completedAt: null }];
-      else turns.push(live);
-    }
+    const turns = this.withLive(threadId, projection.turns);
     const summary = this.catalog.get(threadId);
     const header = summary ? this.headerOf(summary, session) : undefined;
     const thread = header
@@ -433,10 +427,15 @@ export class ClaudeThreads {
     return this.sessions.get(threadId)?.liveTurn()?.id === turnId;
   }
 
-  /** History turns with the live turn as the session shows it. */
+  /** History turns with the live turn as the session shows it, and the background commands still running as running. */
   private withLive(threadId: string, history: readonly Turn[]): Turn[] {
-    let turns = [...history];
-    const live = this.sessions.get(threadId)?.liveTurn();
+    const session = this.sessions.get(threadId);
+    const running = session?.runningCommands;
+    let turns = running?.size ? history.map((turn) => ({
+      ...turn,
+      items: turn.items.map((item) => running.has(item.id) ? { ...item, status: "inProgress", exitCode: null, aggregatedOutput: null, durationMs: null } as ThreadItem : item),
+    })) : [...history];
+    const live = session?.liveTurn();
     if (!live) return turns;
     const index = turns.findIndex((turn) => turn.id === live.id);
     if (index >= 0) turns = [...turns.slice(0, index), { ...turns[index]!, status: "inProgress", completedAt: null }];

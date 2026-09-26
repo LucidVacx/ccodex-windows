@@ -20,7 +20,7 @@ import { userText } from "./native/summary.js";
 import { normalizeClaudeModelIdentifier } from "./modelSelection.js";
 import { peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
 import { baseOptions } from "./sdk.js";
-import { proposedChanges, startTool, updateToolInput, type ActiveTool } from "./toolMapper.js";
+import { endedBackground, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
 import type { ClaudeThreads } from "./threads.js";
 
 export interface SessionSettings {
@@ -126,7 +126,6 @@ const EMPTY_USAGE: TokenUsageBreakdown = {
 };
 const YIELD_BUDGET_MS = 20;
 export const INJECTED_PREFIX = "[Injected model-visible history]";
-const CONTINUATION_GRACE_MS = 3_000;
 
 function breakdown(usage: Record<string, any> | undefined): TokenUsageBreakdown {
   const input = Number(usage?.input_tokens ?? 0);
@@ -164,6 +163,10 @@ export class ClaudeSession {
   public turn: ActiveTurn | undefined;
   public state: "idle" | "running" | "requires_action" = "idle";
   public readonly tasks = new Map<string, BackgroundTask>();
+  /** Background commands running on past their turn (stock's background terminals), by task id. */
+  private readonly background = new Map<string, { item: ThreadItem; turnId: string; startedAtMs: number }>();
+  /** TaskStop calls: shown on the command they stop, as stock shows a Ctrl-C (by tool use id). */
+  private readonly stops = new Map<string, Tool>();
   /** Claude's sub-agents running (in the background they keep no turn open: each has a chat of its own). */
   private readonly agents = new Set<string>();
   public queued: QueuedSubmissionLike[] = [];
@@ -189,7 +192,6 @@ export class ClaudeSession {
   /** Injected context (`shouldQuery: false`) runs a silent query of its own: no turn is shown for it. */
   private readonly injections = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   private readonly turnWaiters = new Map<string, (status: string) => void>();
-  private continuationTimer?: NodeJS.Timeout;
   private runningTimer?: NodeJS.Timeout;
   private exists: boolean;
   public compactSummary?: (summary: string) => void;
@@ -200,6 +202,8 @@ export class ClaudeSession {
   private readonly peerMessages = new Set<string>();
   /** The running turn's result came: Claude answering again means it took another prompt by itself. */
   private afterResult = false;
+  /** A task's end came with no turn running: the command Claude runs for it goes on after the last answer. */
+  private notified = false;
   /** Claude's last block since a turn began (its item id; the text item while it streams text). */
   private lastBlock?: { id: string; text?: { text: string } };
   private transcript?: string;
@@ -224,17 +228,22 @@ export class ClaudeSession {
 
   /** Nothing to do for `idleMs` (closing its process loses nothing: the next turn resumes from disk). */
   public quiet(now: number, idleMs: number): boolean {
-    return !this.turn && !this.queued.length && !this.injections.size && !this.crons && now - this.activeAt >= idleMs;
+    return !this.turn && !this.tasks.size && !this.queued.length && !this.injections.size && !this.crons && now - this.activeAt >= idleMs;
   }
 
-  /** The turn has its answer and only waits for background tasks to end. */
+  /** No turn runs, only background tasks. */
   public get waitingOnTasks(): boolean {
-    return this.turn?.resultSeen === true && this.state === "idle" && this.tasks.size > 0;
+    return !this.turn && this.tasks.size > 0;
+  }
+
+  /** The item ids of the background commands running (history shows them ended unless they run here). */
+  public get runningCommands(): ReadonlySet<string> {
+    return new Set([...this.background.values()].map(({ item }) => item.id));
   }
 
   /** Stops the background tasks as Claude's own stop control does: Claude learns they were stopped, not that they failed. */
   public async stopTasks(): Promise<void> {
-    await Promise.all([...this.tasks.keys()].map((taskId) => this.sdk!.stopTask(taskId)));
+    await Promise.all([...this.tasks.keys()].map((taskId) => this.stopTask(taskId)));
   }
 
   // ---- lifecycle ----
@@ -364,8 +373,6 @@ export class ClaudeSession {
     const content = await claudeContent(input, this.settings.cwd);
     // Desktop shows `/goal` messages itself.
     const hidden = typeof content === "string" && /^\/(?:compact|goal)(?:\s|$)/u.test(content);
-    // Claude only waits on background tasks: it takes the message as a prompt of its own.
-    if (this.waitingOnTasks) this.completeTurn();
     if (this.turn) {
       // Claude folds a message sent mid-turn into the running turn, like a steer.
       this.pendingInputs.set(uuid, { input, clientId: params.clientUserMessageId ?? null, hidden });
@@ -386,7 +393,6 @@ export class ClaudeSession {
 
   public async steer(params: JsonObject): Promise<string> {
     if (!this.turn) throw invalidRequest("no active turn to steer");
-    if (this.waitingOnTasks) return (await this.startTurn(params)).id;
     const input = normalizeUserInput(params.input ?? []);
     const uuid = randomUUID();
     this.pendingInputs.set(uuid, { input, clientId: params.clientUserMessageId ?? null, hidden: false });
@@ -421,6 +427,7 @@ export class ClaudeSession {
     // Stop stops all Claude runs: its background tasks and sub-agents too (a message sent meanwhile leaves them running).
     const sdk = this.sdk;
     await Promise.all([sdk.interrupt(), ...[...this.tasks.keys(), ...this.agents].map((id) => sdk.stopTask(id))].map((done) => done.catch(() => undefined)));
+    for (const taskId of this.tasks.keys()) this.endBackground(taskId, { status: "stopped", summary: "", atMs: Date.now() });
     this.tasks.clear();
     this.agents.clear();
     if (this.state === "idle" && this.turn) {
@@ -431,6 +438,19 @@ export class ClaudeSession {
 
   public async stopTask(taskId: string): Promise<void> {
     await this.sdk?.stopTask(taskId);
+    this.endBackground(taskId, { status: "stopped", summary: "", atMs: Date.now() });
+  }
+
+  /** A background command ended: its item completes in the turn it started in, as stock's background terminal does. */
+  private endBackground(taskId: string, end: BackgroundEnd): void {
+    const running = this.background.get(taskId);
+    if (!running) return;
+    this.background.delete(taskId);
+    const { item, turnId } = running;
+    const ended = endedBackground(item, end, running.startedAtMs);
+    const index = this.turn?.id === turnId ? this.turn.items.findIndex((candidate) => candidate.id === item.id) : -1;
+    if (index >= 0) this.turn!.items[index] = ended;
+    this.emit("item/completed", { item: ended, threadId: this.threadId, turnId, completedAtMs: end.atMs });
   }
 
   public async askSideQuestion(question: string): Promise<string> {
@@ -482,6 +502,7 @@ export class ClaudeSession {
     this.turn = { id, startedAt: Date.now(), items: turn.items, resultSeen: false, interrupted: false, error: null };
     this.activeAt = Date.now();
     this.afterResult = false;
+    this.notified = false;
     this.lastBlock = undefined;
     try {
       this.transcriptRead = statSync(this.transcriptPath() ?? "").size;
@@ -509,13 +530,10 @@ export class ClaudeSession {
   }
 
   private maybeComplete(): void {
-    if (!this.turn || !this.turn.resultSeen || this.state !== "idle" || this.continuationTimer) return;
-    if (!this.tasks.size || this.queued.length) return this.completeTurn();
-    // Background tasks run on after the answer: it ends its turn, and a new one keeps the chat working until they end
-    // or wake Claude up.
-    if (!this.lastBlock) return;
-    this.continueTurn();
-    this.turn!.resultSeen = true;
+    // Background commands run on past the turn (stock's background terminals); a task's end that wakes Claude up starts
+    // a turn of its own.
+    if (!this.turn || !this.turn.resultSeen || this.state !== "idle") return;
+    this.completeTurn();
   }
 
   /** Claude goes on after an answer with no prompt: the answer ends its turn, the work goes on in a new one (history's). */
@@ -626,6 +644,7 @@ export class ClaudeSession {
     // A command Claude started by itself (a message another agent sent): its turn has the id history gives it.
     if (m.state === "started" && uuid && !pending && !this.injections.has(uuid)) {
       clearTimeout(this.runningTimer);
+      if (!this.turn && this.notified) return this.ensureTurn();
       if (!this.turn) this.ensureTurn(uuid);
       void this.showPeerMessage(uuid);
     }
@@ -744,8 +763,6 @@ export class ClaudeSession {
       case "session_state_changed":
         this.state = m.state;
         if (m.state === "running") {
-          clearTimeout(this.continuationTimer);
-          this.continuationTimer = undefined;
           // Claude started it by itself: the command it runs (announced right after) gives the turn its id.
           if (!this.injections.size && !this.turn) {
             clearTimeout(this.runningTimer);
@@ -770,14 +787,12 @@ export class ClaudeSession {
         this.tasks.delete(m.task_id);
         this.agents.delete(m.task_id);
         this.host.subagentFinished(`agent-${m.task_id}`);
-        this.awaitWakeup();
+        this.notified ||= !this.turn;
+        this.endBackground(m.task_id, { status: String(m.status), summary: String(m.summary ?? ""), ...(m.output_file ? { outputFile: m.output_file } : {}), atMs: Date.now() });
         return;
       case "background_tasks_changed": {
-        // Claude tells the change before the task's notification: it may wake Claude up still.
         const live = new Set((m.tasks ?? []).map((task: any) => task.task_id));
-        const ended = [...this.tasks.keys()].filter((id) => !live.has(id));
-        for (const id of ended) this.tasks.delete(id);
-        if (ended.length) this.awaitWakeup();
+        for (const id of [...this.tasks.keys()].filter((id) => !live.has(id))) this.tasks.delete(id);
         return;
       }
       case "api_retry":
@@ -799,15 +814,6 @@ export class ClaudeSession {
   }
 
   /** A task ended while Claude was idle: its notification may wake Claude up, so the turn waits a moment for that. */
-  private awaitWakeup(): void {
-    if (this.state !== "idle" || !this.turn) return;
-    clearTimeout(this.continuationTimer);
-    this.continuationTimer = setTimeout(() => {
-      this.continuationTimer = undefined;
-      this.maybeComplete();
-    }, CONTINUATION_GRACE_MS);
-  }
-
   /** Visible CCodex/Claude notice inside the running turn (e.g. `/goal` output). */
   private systemText(text: string): void {
     if (!text.trim() || !this.turn) return;
@@ -934,6 +940,13 @@ export class ClaudeSession {
         }
       : startTool(index, block, this.settings.cwd, this.threadId);
     started.item = sentMessageItem(started.item, started.state.input, undefined, this.peers);
+    // Stopping a background command shows on the command, as stock's Ctrl-C; what else it stops shows with its result.
+    if (block.name === "TaskStop") {
+      const taskId = String(block.input?.task_id);
+      const running = this.background.get(taskId);
+      if (running) this.emit("item/commandExecution/terminalInteraction", { threadId: this.threadId, turnId: running.turnId, itemId: running.item.id, processId: taskId, stdin: "\u0003" });
+      return void this.stops.set(block.id, started);
+    }
     this.tools.set(block.id, started);
     this.itemStarted(started.item);
   }
@@ -976,10 +989,28 @@ export class ClaudeSession {
       if (block.type !== "tool_result") continue;
       this.codexTails.get(block.tool_use_id)?.();
       this.codexTails.delete(block.tool_use_id);
+      const result = typeof m.tool_use_result === "object" && m.tool_use_result !== null ? m.tool_use_result : undefined;
+      const stop = this.stops.get(block.tool_use_id);
+      if (stop) {
+        this.stops.delete(block.tool_use_id);
+        const stopped = stoppedCommand(result);
+        if (stopped) {
+          this.endBackground(stopped, { status: "stopped", summary: "", atMs: Date.now() });
+          continue;
+        }
+        this.tools.set(block.tool_use_id, stop);
+        this.itemStarted(stop.item);
+      }
       const tool = this.tools.get(block.tool_use_id);
       if (!tool) continue;
       this.tools.delete(block.tool_use_id);
-      const result = typeof m.tool_use_result === "object" && m.tool_use_result !== null ? m.tool_use_result : undefined;
+      // A command in the background runs on past its turn: its item completes when it ends (stock's background terminal).
+      const taskId = tool.state.name === "Bash" && typeof result?.backgroundTaskId === "string" ? result.backgroundTaskId : undefined;
+      if (taskId && this.turn) {
+        const item = { ...tool.item, processId: taskId } as ThreadItem;
+        this.background.set(taskId, { item, turnId: this.turn.id, startedAtMs: tool.state.startedAtMs });
+        continue;
+      }
       // The result tells where a message went (its msg_id) when the call alone did not.
       const item = completedToolItem({ ...tool, item: sentMessageItem(tool.item, tool.state.input, result, this.peers) }, { record: { toolUseResult: result }, block }, this.settings.cwd);
       if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.receiverThreadIds.length) {

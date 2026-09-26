@@ -39,14 +39,18 @@ const sessionName = (threadId) => {
   return readdirSync(sessions).map((file) => JSON.parse(readFileSync(join(sessions, file), "utf8"))).find((session) => session.sessionId === threadId)?.name;
 };
 /** The turns a thread showed live since a message index: ids and completed items (id + type), in order. */
+/** The turns as the client saw them live: each completed item where it started (a background command completes late). */
 const liveTurns = (threadId, since) => {
   const turns = new Map();
   for (const m of client.messages.slice(since)) {
     if (m.params?.threadId !== threadId) continue;
-    if (m.method === "turn/started") turns.set(m.params.turn.id, []);
-    if (m.method === "item/completed" && turns.has(m.params.turnId)) turns.get(m.params.turnId).push(m.params.item);
+    if (m.method === "turn/started") turns.set(m.params.turn.id, { order: [], completed: [] });
+    const turn = turns.get(m.params.turnId);
+    if (m.method === "item/started" && turn) turn.order.push(m.params.item.id);
+    if (m.method === "item/completed" && turn) turn.completed.push(m.params.item);
   }
-  return [...turns].map(([id, items]) => ({ id, items }));
+  const at = (turn, item) => { const index = turn.order.indexOf(item.id); return index < 0 ? Infinity : index; };
+  return [...turns].map(([id, turn]) => ({ id, items: turn.completed.map((item, index) => ({ item, index })).sort((a, b) => at(turn, a.item) - at(turn, b.item) || a.index - b.index).map(({ item }) => item) }));
 };
 /** Same turns with the same user messages and tools (reasoning and message split may differ between live and history). */
 const sameTurns = (live, history) => {
@@ -563,30 +567,38 @@ const scenarios = {
     check(split.length === 2 && /^agent:\d{3,}$/u.test(long) && Number(long.slice(6)) >= 800, "the long message ends its turn", shape(split));
     check(split[1].id.endsWith(":continued") && !split[1].items.some((item) => item.type === "userMessage") && /DONE/u.test(report.answers.at(-1)), "the work goes on in a turn with no prompt", shape(split));
 
+    // Like stock's background terminal: the turn ends, the command runs on and completes in that turn; its end wakes
+    // Claude up in a turn of its own.
     const since = client.messages.length;
     const watching = client.turn(thread.id, `${TEST}Use the Bash tool with run_in_background set to true to run exactly: sleep 15; echo bg-done. Do not wait for it: reply WATCHING right away. When it finishes, reply FINISHED.`, {}, 240_000, 2);
     const answered = await client.waitFor("turn/completed", (p) => p.threadId === thread.id, 120_000, since);
-    const holder = await client.waitFor("turn/started", (p) => p.threadId === thread.id && p.turn.id !== answered.turn.id, 30_000, since);
+    const command = (p) => p.threadId === thread.id && p.turnId === answered.turn.id && p.item.type === "commandExecution" && p.item.command.includes("bg-done");
     const open = (await client.request("thread/read", { threadId: thread.id, includeTurns: true })).thread;
-    check(open.status.type === "active" && open.turns.at(-1).id === holder.turn.id && open.turns.at(-1).status === "inProgress", "a new turn keeps the chat working while the command runs", { status: open.status, last: open.turns.at(-1) });
+    const running = open.turns.at(-1).items.find((item) => item.type === "commandExecution" && item.command.includes("bg-done"));
+    check(open.status.type === "idle" && open.turns.at(-1).id === answered.turn.id && running?.status === "inProgress", "the turn ends while the command runs on (idle, the command running)", { status: open.status, running });
+    const ended = await client.waitFor("item/completed", command, 60_000, since);
+    check(ended.item.status === "completed" && ended.item.exitCode === 0 && /bg-done/u.test(ended.item.aggregatedOutput ?? ""), "the command completes in its turn with its output", ended.item);
     const woken = await watching;
-    check(/FINISHED/u.test(woken.answers.at(-1)) && woken.turn.id === holder.turn.id, "the command's end wakes Claude in that turn", { answers: woken.answers, turn: woken.turn.id, holder: holder.turn.id });
+    check(/FINISHED/u.test(woken.answers.at(-1)) && woken.turn.id.endsWith(":continued"), "its end wakes Claude in a turn of its own", { answers: woken.answers, turn: woken.turn.id });
     const live = shape(liveTurns(thread.id, 0));
     const history = shape((await client.request("thread/read", { threadId: thread.id, includeTurns: true })).thread.turns);
     check(JSON.stringify(live) === JSON.stringify(history), "live turns are history's", { live, history });
 
-    // Stop stops everything: the command running in the background too.
+    // Desktop's "Stop all background terminals" stops Claude's command; Claude stopping one itself shows on the command.
     const before = client.messages.length;
-    void client.turn(thread.id, `${TEST}Use the Bash tool with run_in_background set to true to run exactly: sleep 118; echo late. Do not wait for it: reply STARTED right away.`, {}, 240_000, 2).catch(() => undefined);
-    const started = await client.waitFor("turn/completed", (p) => p.threadId === thread.id, 120_000, before);
-    const waiting = await client.waitFor("turn/started", (p) => p.threadId === thread.id && p.turn.id !== started.turn.id, 30_000, before);
+    await client.turn(thread.id, `${TEST}Use the Bash tool with run_in_background set to true to run exactly: sleep 118; echo late. Do not wait for it: reply STARTED right away.`, {}, 240_000);
     check(spawnSync("pgrep", ["-f", "sleep 118"]).status === 0, "the background command runs", {});
-    await client.request("turn/interrupt", { threadId: thread.id, turnId: waiting.turn.id });
-    const stopped = await client.waitFor("turn/completed", (p) => p.turn.id === waiting.turn.id, 15_000, before);
-    await sleep(8_000);
-    const after = client.messages.slice(before).filter((m) => m.method === "turn/started" && m.params.threadId === thread.id).map((m) => m.params.turn.id);
-    check(stopped.turn.status === "interrupted" && spawnSync("pgrep", ["-f", "sleep 118"]).status !== 0, "Stop stops the background command", { status: stopped.turn.status });
-    check(after.length === 2, "Claude says nothing more after Stop", { after, answers: answers(client, thread.id, before) });
+    await client.request("thread/backgroundTerminals/clean", { threadId: thread.id });
+    const cleaned = await client.waitFor("item/completed", (p) => p.threadId === thread.id && p.item.type === "commandExecution" && p.item.command.includes("sleep 118"), 15_000, before);
+    await sleep(3_000);
+    check(cleaned.item.status === "failed" && spawnSync("pgrep", ["-f", "sleep 118"]).status !== 0, "the panel's stop stops the command", cleaned.item);
+    const self = client.messages.length;
+    const stop = await client.turn(thread.id, `${TEST}Use the Bash tool with run_in_background set to true to run exactly: sleep 117. Then stop that background task with the TaskStop tool. Then reply STOPPED.`, {}, 240_000);
+    const interaction = client.messages.slice(self).find((m) => m.method === "item/commandExecution/terminalInteraction" && m.params.threadId === thread.id);
+    const stopItems = (await client.request("thread/read", { threadId: thread.id, includeTurns: true })).thread.turns.find((turn) => turn.id === stop.turn.id).items;
+    check(interaction?.params.stdin === "\u0003" && !stopItems.some((item) => /TaskStop/iu.test(JSON.stringify(item.tool ?? ""))) && spawnSync("pgrep", ["-f", "sleep 117"]).status !== 0,
+      "Claude's TaskStop shows as a Ctrl-C on the command, not as a call", { interaction: interaction?.params, items: stopItems.map((item) => [item.type, item.tool ?? item.status]) });
+    const stopped = { turn: { status: stopItems.find((item) => item.type === "commandExecution")?.status } };
     return { turns: history, stopped: stopped.turn.status };
   },
 

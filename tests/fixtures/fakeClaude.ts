@@ -1,7 +1,8 @@
 // Scripted stand-in for the Claude Agent SDK `query()`: answers each pushed message, streams like the real CLI and
 // persists the same transcript records under $CLAUDE_CONFIG_DIR/projects, so the native catalog/projector read it.
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 type Message = Record<string, any>;
@@ -166,10 +167,10 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   transcript.write({ type: "user", uuid, origin: { kind: "human" }, promptId: randomUUID(), message: { role: "user", content: prompt.message.content } });
   let reply = fakeClaude.reply(text);
   const tool = (messageId: string, index: number, name: string, input: Message): Message => ({ type: "assistant", message: { id: messageId, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: `toolu_${randomUUID().slice(0, 8)}`, name, input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } }, apiBlockIndex: index });
-  const toolResult = function* (call: Message, output: string): Generator<Message> {
+  const toolResult = function* (call: Message, output: string, result: Message = { stdout: output, stderr: "" }): Generator<Message> {
     const content = [{ type: "tool_result", tool_use_id: call.message.content[0].id, content: output }];
-    transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: { stdout: output, stderr: "" } });
-    yield base(sessionId, { type: "user", message: { role: "user", content }, tool_use_result: { stdout: output, stderr: "" } });
+    transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: result });
+    yield base(sessionId, { type: "user", message: { role: "user", content }, tool_use_result: result });
   };
   // Like Claude: a long message, then more work in the same response.
   const report = /^report at length: (.+)$/u.exec(text);
@@ -190,15 +191,26 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     yield* toolResult(call, "");
     reply = "checked";
   }
-  // Like Claude: a command in the background, whose end wakes Claude up after its answer (`fakeClaude.backgroundMs` later).
-  const background = /^watch in background: (.+)$/u.exec(text);
+  // Like Claude: a command in the background, whose end wakes Claude up after its answer (`fakeClaude.backgroundMs` later),
+  // or which Claude stops itself (TaskStop).
+  const background = /^watch in background: (.+)$/u.exec(text) ?? /^stop in background: (.+)$/u.exec(text);
   if (background) {
     const call = tool(`msg_${randomUUID().slice(0, 8)}`, 0, "Bash", { command: background[1], run_in_background: true });
     transcript.write(call);
     yield base(sessionId, call);
     yield base(sessionId, { type: "system", subtype: "task_started", task_id: "bg1", tool_use_id: call.message.content[0].id, description: background[1], task_type: "local_bash" });
-    yield* toolResult(call, "Command running in background with ID: bg1");
+    yield* toolResult(call, "Command running in background with ID: bg1", { stdout: "", stderr: "", backgroundTaskId: "bg1" });
     reply = "watching";
+  }
+  const stopped = background && text.startsWith("stop in background:");
+  if (stopped) {
+    const call = tool(`msg_${randomUUID().slice(0, 8)}`, 0, "TaskStop", { task_id: "bg1" });
+    transcript.write(call);
+    yield base(sessionId, call);
+    yield base(sessionId, { type: "system", subtype: "background_tasks_changed", tasks: [] });
+    const message = `Successfully stopped task: bg1 (${background[1]})`;
+    yield* toolResult(call, JSON.stringify({ message }), { message, task_id: "bg1", task_type: "local_bash", command: background[1] });
+    reply = "stopped";
   }
   const fileTool = text.includes("needs file approval");
   if (text.includes("needs approval") || fileTool) {
@@ -331,12 +343,15 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   // Streamed assistant messages never carry the stop reason (only the transcript does).
   yield base(sessionId, { ...assistant, message: { ...assistant.message, stop_reason: null } });
   yield* finish(reply);
-  if (!background) return;
+  if (!background || stopped) return;
   await sleep(fakeClaude.backgroundMs);
+  const outputFile = join(mkdtempSync(join(tmpdir(), "fake-task-")), "bg1.output");
+  writeFileSync(outputFile, "BG-OUT\n");
+  const summary = `Background command "${background[1]}" completed (exit code 0)`;
   yield base(sessionId, { type: "system", subtype: "background_tasks_changed", tasks: [] });
-  yield base(sessionId, { type: "system", subtype: "task_notification", task_id: "bg1", status: "completed", output_file: "", summary: background[1] });
+  yield base(sessionId, { type: "system", subtype: "task_notification", task_id: "bg1", status: "completed", output_file: outputFile, summary });
   yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "running" });
-  transcript.write({ type: "user", origin: { kind: "task-notification" }, promptId: randomUUID(), message: { role: "user", content: `<task-notification>\n<task-id>bg1</task-id>\n<status>completed</status>\n</task-notification>` } });
+  transcript.write({ type: "user", origin: { kind: "task-notification" }, promptId: randomUUID(), message: { role: "user", content: `<task-notification>\n<task-id>bg1</task-id>\n<output-file>${outputFile}</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n</task-notification>` } });
   const woken = `msg_${randomUUID().slice(0, 8)}`;
   yield base(sessionId, { type: "stream_event", event: { type: "message_start", message: { id: woken } } });
   yield base(sessionId, { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } } });

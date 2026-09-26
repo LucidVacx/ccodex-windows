@@ -14,9 +14,52 @@ export interface ActiveTool {
   partialInput: string;
   started: boolean;
   readonly startedAtMs: number;
-  backgroundTaskId?: string;
-  outputFile?: string;
-  foldedTaskId?: string;
+}
+
+/** How a background command ended: Claude's task notification (its status and summary), or a stop. */
+export interface BackgroundEnd {
+  readonly status: string;
+  readonly summary: string;
+  readonly outputFile?: string;
+  readonly atMs: number;
+}
+
+const BACKGROUND_OUTPUT_BYTES = 256 << 10;
+
+/** The end of a command's output file (Claude writes a background command's output there). */
+function outputTail(path: string): string | null {
+  try {
+    const bytes = readFileSync(path);
+    return bytes.subarray(Math.max(0, bytes.length - BACKGROUND_OUTPUT_BYTES)).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Like stock's background terminal: the command's item completes when the command ends, with its output. */
+export function endedBackground(item: ThreadItem, end: BackgroundEnd, startedAtMs: number): ThreadItem {
+  if (item.type !== "commandExecution") return item;
+  const exit = /\(exit code (-?\d+)\)/u.exec(end.summary);
+  return {
+    ...item, status: end.status === "completed" ? "completed" : "failed", exitCode: exit ? Number(exit[1]) : null,
+    aggregatedOutput: end.outputFile ? outputTail(end.outputFile) : null, durationMs: Math.max(0, end.atMs - startedAtMs),
+  };
+}
+
+/** The background command a TaskStop result stopped (its task id). */
+export function stoppedCommand(result: Record<string, unknown> | undefined): string | undefined {
+  return result?.task_type === "local_bash" && typeof result.task_id === "string" && typeof result.message === "string"
+    && result.message.startsWith("Successfully stopped task") ? result.task_id : undefined;
+}
+
+/** A task notification Claude takes as a prompt: `<task-id>`, `<status>`, `<summary>`, `<output-file>`. */
+export function taskNotification(text: string, atMs: number): { taskId: string; end: BackgroundEnd } | undefined {
+  const field = (name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "u").exec(text)?.[1];
+  const taskId = field("task-id");
+  const status = field("status");
+  if (!taskId || !status) return undefined;
+  const outputFile = field("output-file");
+  return { taskId, end: { status, summary: field("summary") ?? "", ...(outputFile ? { outputFile } : {}), atMs } };
 }
 
 const fileTools = new Set(["Edit", "Write", "NotebookEdit"]);

@@ -6,7 +6,8 @@
 import { open, stat } from "node:fs/promises";
 import type { Turn } from "../../protocol/codex.js";
 import type { PeerDirectory } from "../peers.js";
-import { projectTranscript, type TranscriptProjection } from "./projector.js";
+import type { BackgroundEnd } from "../toolMapper.js";
+import { backgroundEnds, projectTranscript, type TranscriptProjection } from "./projector.js";
 import { parseTranscriptLine, type TranscriptRecord } from "./records.js";
 import type { TranscriptHeader } from "./summary.js";
 
@@ -91,7 +92,7 @@ function uuidOf(record: TranscriptRecord): string | undefined {
 }
 
 /** Extends the window back by up to `chunk` bytes; false when no whole line fits in them (a longer chunk will). */
-async function readBack(path: string, window: Window, chunk: number): Promise<boolean> {
+async function readBack(path: string, window: Window, chunk: number, ends: Map<string, BackgroundEnd>): Promise<boolean> {
   const from = Math.max(0, window.start - chunk);
   const bytes = await readRange(path, from, window.start);
   const first = from === 0 ? 0 : bytes.indexOf(0x0a) + 1;
@@ -101,6 +102,7 @@ async function readBack(path: string, window: Window, chunk: number): Promise<bo
   if (window.start === window.end) window.end = parsed.end;
   else if (parsed.end !== window.start) throw new Error(`${path}: a line runs past a window's start`);
   window.start = from + first;
+  backgroundEnds(parsed.records, ends);
   window.records.unshift(...parsed.records);
   window.positions.unshift(...parsed.positions);
   parsed.records.forEach((record, index) => {
@@ -111,9 +113,10 @@ async function readBack(path: string, window: Window, chunk: number): Promise<bo
 }
 
 /** Appends what Claude wrote since the window's end. */
-async function readForward(path: string, window: Window, size: number): Promise<void> {
+async function readForward(path: string, window: Window, size: number, ends: Map<string, BackgroundEnd>): Promise<void> {
   if (size <= window.end || !window.records.length) return;
   const parsed = parseLines(await readRange(path, window.end, size), window.end, 0);
+  backgroundEnds(parsed.records, ends);
   window.end = parsed.end;
   window.records.push(...parsed.records);
   window.positions.push(...parsed.positions);
@@ -150,6 +153,11 @@ export class TranscriptPages {
   /** The newest part of the file; follows Claude's writes. */
   private live?: Window & { readonly ino: number; cache?: { readonly key: string; readonly window: TurnWindow } };
   private readonly places = new Map<string, TurnPlace>();
+  /**
+   * How background commands ended, from every part of the file read. A turn is read after the turns that follow it
+   * (pages go back from the end), so its commands' ends are known by then.
+   */
+  private readonly ends = new Map<string, BackgroundEnd>();
   private queue: Promise<unknown> = Promise.resolve();
 
   public constructor(private readonly chunkBytes = CHUNK_BYTES) {}
@@ -198,9 +206,10 @@ export class TranscriptPages {
     if (!this.live || this.live.ino !== ino || size < this.live.end) {
       this.live = { ...emptyWindow(size), ino };
       this.places.clear();
+      this.ends.clear();
     }
     const live = this.live;
-    await readForward(source.path, live, size);
+    await readForward(source.path, live, size, this.ends);
     const key = `${live.start}:${live.end}:${source.leafUuid ?? ""}:${source.peersVersion}`;
     if (live.cache?.key === key && (!live.cache.window.older || enough(live.cache.window.turns))) return live.cache.window;
     const window = await this.fill(source, live, source.leafUuid, false, enough);
@@ -225,7 +234,7 @@ export class TranscriptPages {
       if (window.records.length && (!leafUuid || window.offsets.has(leafUuid))) {
         const projection = await projectTranscript({
           sessionId: source.sessionId, path: source.path, records: window.records, header: source.header,
-          peers: source.peers, continues, physical, ...(leafUuid ? { leafUuid } : {}),
+          peers: source.peers, continues, physical, backgroundEnds: this.ends, ...(leafUuid ? { leafUuid } : {}),
         });
         // Cut off from its start, the first turn lacks what came before it (a steer's queue, the prompt of the answer it
         // goes on after): only the turns after it are whole.
@@ -244,7 +253,7 @@ export class TranscriptPages {
         if (!leafUuid) return { turns: [], older: false, projection: await projectTranscript({ sessionId: source.sessionId, path: source.path, records: [], header: source.header }) };
         throw new Error(`${source.path}: record ${leafUuid} not found`);
       }
-      await readBack(source.path, window, chunk);
+      await readBack(source.path, window, chunk, this.ends);
     }
   }
 
