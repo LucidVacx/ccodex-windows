@@ -129,7 +129,8 @@ export function classifyInvocation(args: readonly string[], config: Config): Inv
   }
 
   const listen = optionValue(appArgs, "--listen");
-  if (!listen || appArgs.includes("--stdio")) {
+  // Stock's default listener, spelled out by some clients (Desktop's Browser Use helper).
+  if (!listen || listen === "stdio://" || appArgs.includes("--stdio")) {
     return {
       kind: "stdioFrontend",
       socketPath: config.publicSocket,
