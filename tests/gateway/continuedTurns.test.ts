@@ -62,6 +62,10 @@ describe("Claude going on after an answer: a turn of its own, as history shows i
     expect(holder.turn.id).toMatch(/:0:continued$/u);
     const open = await historyTurns(threadId);
     expect(open.map((turn) => [turn.id, turn.status])).toEqual([[first.turn.id, "completed"], [holder.turn.id, "inProgress"]]);
+    // Desktop pages from the open turn, which Claude has written nothing of yet.
+    const page = await client.request("thread/turns/list", { threadId, cursor: JSON.stringify({ turnId: holder.turn.id, includeAnchor: true }), limit: 5, sortDirection: "desc" });
+    expect(page.data.map((turn: { id: string }) => turn.id)).toEqual([holder.turn.id, first.turn.id]);
+    await client.request("thread/items/list", { threadId, turnId: holder.turn.id, limit: 100, sortDirection: "desc" });
     await answered;
     const live = liveTurns(threadId);
     expect(live.map((turn) => turn.id)).toEqual([first.turn.id, holder.turn.id]);

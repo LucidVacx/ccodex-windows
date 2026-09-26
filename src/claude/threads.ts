@@ -428,6 +428,11 @@ export class ClaudeThreads {
     return this.catalog.pages(threadId, this.gateway.meta.leaf(threadId));
   }
 
+  /** The running turn is the newest one, before Claude writes any of it too (a turn it goes on in after an answer). */
+  private running(threadId: string, turnId: string): boolean {
+    return this.sessions.get(threadId)?.liveTurn()?.id === turnId;
+  }
+
   /** History turns with the live turn as the session shows it. */
   private withLive(threadId: string, history: readonly Turn[]): Turn[] {
     let turns = [...history];
@@ -456,7 +461,7 @@ export class ClaudeThreads {
     if (!this.paged(threadId) || !descending && !anchor) return paginateTurns((await this.read(threadId)).turns, params);
     const { pages, source } = this.pages(threadId);
     const limit = Math.max(1, Math.min(params.limit ?? 25, 100));
-    const window = !anchor ? await pages.newest(source, limit + 1)
+    const window = !anchor || this.running(threadId, anchor.anchor) ? await pages.newest(source, limit + 1)
       : descending ? await pages.around(source, anchor.anchor, limit + 1)
         : await pages.since(source, anchor.anchor);
     return paginateTurns(this.withLive(threadId, window.turns), params);
@@ -467,7 +472,8 @@ export class ClaudeThreads {
     // Desktop always names the turn; items across the whole thread need all of it.
     if (!this.paged(threadId) || !params.turnId) return paginateItems((await this.read(threadId)).turns, params);
     const { pages, source } = this.pages(threadId);
-    const turn = this.withLive(threadId, (await pages.around(source, params.turnId, 0)).turns).find((candidate) => candidate.id === params.turnId)!;
+    const window = this.running(threadId, params.turnId) ? await pages.newest(source, 1) : await pages.around(source, params.turnId, 0);
+    const turn = this.withLive(threadId, window.turns).find((candidate) => candidate.id === params.turnId)!;
     const anchor = params.cursor ? anchorCursor("itemId", params.cursor)?.anchor : undefined;
     if (!anchor || turn.items.some((item) => item.id === anchor)) return paginateItems([turn], params);
     // Desktop pages an older turn from the thread's last item (the resume's backwards cursor): stock places the anchor
