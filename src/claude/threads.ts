@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { deleteSession, forkSession, renameSession, type PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+import { deleteSession, forkSession, renameSession, type ModelInfo, type PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import { v7 as uuidv7 } from "uuid";
 import type { Config } from "../config.js";
 import type { Connection } from "../gateway/connection.js";
@@ -77,8 +78,13 @@ export class ClaudeThreads {
   }
 
   public async start(): Promise<void> {
-    // The model list maps transcripts' resolved model ids to picker values (see pickerModel).
-    void this.models().catch(() => undefined);
+    // The model list maps transcripts' resolved model ids to picker values (see pickerModel): the one Claude reported last
+    // time at once (a chat opened right after a start waits for no probe), the fresh one once the probe answers.
+    const cached = this.cachedModels();
+    if (cached) {
+      this.models_ = Promise.resolve(this.useModels(cached));
+      void this.probeModels().then((models) => { this.models_ = Promise.resolve(models); }, () => undefined);
+    } else void this.models().catch(() => undefined);
     await this.catalog.refresh();
     this.gateway.meta.prune((segment) => segment.provider === "codex" || this.catalog.get(segment.threadId) !== undefined);
     const known = new Map(this.catalog.sessions().map((summary) => [summary.sessionId, summary.customTitle ?? summary.aiTitle]));
@@ -642,18 +648,40 @@ export class ClaudeThreads {
   // ---- models and skills ----
 
   public models(): Promise<JsonObject[]> {
-    this.models_ ??= withProbeQuery(this.config, undefined, (probe) => probe.supportedModels()).then((models) => {
-      const resolved = models.find((model) => model.value === "default")?.resolvedModel;
-      this.defaultModel = resolved ? normalizeClaudeModelIdentifier(resolved) : null;
-      for (const model of models) {
-        if (model.value !== "default" && model.resolvedModel) this.pickerValues.set(normalizeClaudeModelIdentifier(model.resolvedModel), modelCatalogValue(model));
-      }
-      return models.filter((model) => model.value !== "default").map((model) => mapClaudeModel(model, this.config.modelPrefix));
-    }).catch((error: unknown) => {
+    this.models_ ??= this.probeModels().catch((error: unknown) => {
       this.models_ = undefined;
       throw error;
     });
     return this.models_;
+  }
+
+  private get modelsPath(): string {
+    return join(this.config.dataDir, "claude-models.json");
+  }
+
+  private cachedModels(): ModelInfo[] | undefined {
+    try {
+      return JSON.parse(readFileSync(this.modelsPath, "utf8")) as ModelInfo[];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Asks Claude for its models and keeps them for the next start. */
+  private async probeModels(): Promise<JsonObject[]> {
+    const models = await withProbeQuery(this.config, undefined, (probe) => probe.supportedModels());
+    const temporary = `${this.modelsPath}.${process.pid}.tmp`;
+    void writeFile(temporary, JSON.stringify(models), { mode: 0o600 }).then(() => rename(temporary, this.modelsPath)).catch(() => undefined);
+    return this.useModels(models);
+  }
+
+  private useModels(models: ModelInfo[]): JsonObject[] {
+    const resolved = models.find((model) => model.value === "default")?.resolvedModel;
+    this.defaultModel = resolved ? normalizeClaudeModelIdentifier(resolved) : null;
+    for (const model of models) {
+      if (model.value !== "default" && model.resolvedModel) this.pickerValues.set(normalizeClaudeModelIdentifier(model.resolvedModel), modelCatalogValue(model));
+    }
+    return models.filter((model) => model.value !== "default").map((model) => mapClaudeModel(model, this.config.modelPrefix));
   }
 
   public modelLabel(model: string | null): string {

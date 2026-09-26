@@ -13,7 +13,7 @@ export interface FakeClaudeLog {
   readonly calls: Array<{ method: string; args: unknown[] }>;
 }
 
-export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; backgroundMs: number } = {
+export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null } = {
   prompts: [],
   options: [],
   calls: [],
@@ -26,6 +26,8 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
   hold: null,
   /** How long a background command runs after Claude's answer. */
   backgroundMs: 500,
+  /** Set: the models probe answers only once it settles. */
+  modelsHold: null,
   reset() {
     this.prompts.length = 0;
     this.options.length = 0;
@@ -35,6 +37,7 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
     this.compactError = null;
     this.hold = null;
     this.backgroundMs = 500;
+    this.modelsHold = null;
   },
 };
 
@@ -394,7 +397,7 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
   const iterator = run();
   return Object.assign(iterator, {
     initializationResult: () => Promise.resolve({}),
-    supportedModels: () => Promise.resolve(MODELS),
+    supportedModels: () => (fakeClaude.modelsHold ?? Promise.resolve()).then(() => MODELS),
     supportedCommands: () => Promise.resolve([{ name: "review-pr", description: "Review a PR", argumentHint: "<n>" }]),
     askSideQuestion: (question: string) => Promise.resolve({ response: `side: ${question}` }),
     interrupt: record("interrupt"),

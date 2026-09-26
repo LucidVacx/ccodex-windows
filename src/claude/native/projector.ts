@@ -716,7 +716,7 @@ export async function projectTranscript(input: ProjectTranscriptInput): Promise<
   }
   const history = input.history ?? selectHistory(rawRecords, input.leafUuid, input.physical);
   const selected = history.records;
-  parseCommands(selected.flatMap((record) => record.type === "assistant"
+  await parseCommands(selected.flatMap((record) => record.type === "assistant"
     ? assistantBlocks(record).flatMap((block) => block.type === "tool_use" && block.name === "Bash" ? string(object(block.input)?.command) ?? [] : [])
     : []));
   const header = input.header ?? summarizeTranscript(rawRecords, input.subagent?.promptRecordUuid);

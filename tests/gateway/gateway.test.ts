@@ -671,6 +671,19 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       "contextCompaction", "user:third", "agent:gpt: third"]);
   });
 
+  it("lists Claude's models at once after a restart, from the list Claude reported last time", async () => {
+    await client.request("model/list", {});
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const dataDir = mkdtempSync(join(tmpdir(), "ccodex-state-"));
+    writeFileSync(join(dataDir, "claude-models.json"), readFileSync(join(gateway.config.dataDir, "claude-models.json")));
+    await gateway.stop();
+    fakeClaude.modelsHold = new Promise(() => undefined);
+    gateway = await startTestGateway({ dataDir });
+    client = await gateway.connect();
+    const models = await client.request("model/list", {});
+    expect(models.data.map((model: any) => model.id)).toContain(CLAUDE);
+  });
+
   it("pages a switched thread's oldest turn items by its id alone (Desktop after a daemon restart, turns cached)", async () => {
     const threadId = await stockThread();
     await client.turn(threadId, "first");

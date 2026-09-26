@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { relayBinary } from "../gateway/remote.js";
 import type { CommandAction } from "../protocol/codex.js";
@@ -23,36 +23,44 @@ function parserBinary(): string | null {
   }
 }
 
-function parse(parser: string, commands: readonly string[]): readonly (readonly ParsedCommand[])[] | undefined {
-  const result = spawnSync(parser, ["parse-commands"], {
-    input: JSON.stringify(commands),
-    encoding: "utf8",
-    timeout: 10_000,
-    maxBuffer: 64 << 20,
-  });
-  if (result.error || result.status !== 0) return undefined;
+const RUN = { encoding: "utf8", timeout: 10_000, maxBuffer: 64 << 20 } as const;
+
+/** The parser's answer for `commands`, or undefined when it failed. */
+function decode(stdout: string | undefined, commands: readonly string[]): readonly (readonly ParsedCommand[])[] | undefined {
+  if (stdout === undefined) return undefined;
   try {
-    const value = JSON.parse(result.stdout) as ParsedCommand[][];
+    const value = JSON.parse(stdout) as ParsedCommand[][];
     return Array.isArray(value) && value.length === commands.length ? value : undefined;
   } catch {
     return undefined;
   }
 }
 
-/** Parses the commands not parsed yet in one run of the parser (a page of history has hundreds). */
-export function parseCommands(commands: readonly string[]): void {
-  const parser = parserBinary();
-  const fresh = [...new Set(commands)].filter((command) => command && !cache.has(command));
-  if (!parser || !fresh.length) return;
-  const values = parse(parser, fresh);
-  fresh.forEach((command, index) => {
+function remember(commands: readonly string[], values: readonly (readonly ParsedCommand[])[] | undefined): void {
+  commands.forEach((command, index) => {
     if (cache.size >= maxCacheEntries) cache.delete(cache.keys().next().value!);
     cache.set(command, values?.[index]);
   });
 }
 
+/** Parses the commands not parsed yet in one run of the parser (a page of history has hundreds), off the event loop. */
+export async function parseCommands(commands: readonly string[]): Promise<void> {
+  const parser = parserBinary();
+  const fresh = [...new Set(commands)].filter((command) => command && !cache.has(command));
+  if (!parser || !fresh.length) return;
+  const stdout = await new Promise<string | undefined>((resolve) => {
+    execFile(parser, ["parse-commands"], RUN, (error, output) => resolve(error ? undefined : output)).stdin?.end(JSON.stringify(fresh));
+  });
+  remember(fresh, decode(stdout, fresh));
+}
+
+/** One live command's parse, at once (history's are parsed a page at a time). */
 function parsed(command: string): readonly ParsedCommand[] | undefined {
-  parseCommands([command]);
+  const parser = parserBinary();
+  if (parser && !cache.has(command)) {
+    const result = spawnSync(parser, ["parse-commands"], { ...RUN, input: JSON.stringify([command]) });
+    remember([command], decode(result.error || result.status !== 0 ? undefined : result.stdout, [command]));
+  }
   return cache.get(command);
 }
 

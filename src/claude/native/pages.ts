@@ -14,6 +14,8 @@ import type { TranscriptHeader } from "./summary.js";
 const CHUNK_BYTES = 1 << 20;
 /** Turns the live window keeps beyond what was asked: the next page of a scroll back needs no read. */
 const KEPT_TURNS = 12;
+/** Windows kept while the file stays as it is: Desktop asks each turn of a page for its items right after the page. */
+const RECENT_WINDOWS = 4;
 
 export interface PageSource {
   readonly sessionId: string;
@@ -158,6 +160,8 @@ export class TranscriptPages {
    * (pages go back from the end), so its commands' ends are known by then.
    */
   private readonly ends = new Map<string, BackgroundEnd>();
+  /** Windows projected lately, newest first, for the file as it was (`key`). */
+  private recent: { key: string; windows: TurnWindow[] } = { key: "", windows: [] };
   private queue: Promise<unknown> = Promise.resolve();
 
   public constructor(private readonly chunkBytes = CHUNK_BYTES) {}
@@ -179,7 +183,13 @@ export class TranscriptPages {
         place = this.places.get(turnId)!;
       }
       if (place.end === undefined) return this.liveWindow(source, reaches, 1);
-      return this.fill(source, emptyWindow(place.end), place.lastUuid, true, reaches, place.physical);
+      const { physical, end, lastUuid } = place;
+      const { ino, size } = await stat(source.path);
+      // A turn alone (its items) reads the same in any window holding it whole; a page's turns before it do not: where
+      // history starts depends on where the window was read from (a compaction).
+      const known = before === 0 && this.recentWindows(source, ino, size).find((window) => reaches(window.turns));
+      if (known) return known;
+      return this.remember(await this.fill(source, emptyWindow(end), lastUuid, true, reaches, physical));
     });
   }
 
@@ -193,6 +203,18 @@ export class TranscriptPages {
     if (!this.places.has(turnId)) await this.around(source, turnId, 0);
     const place = this.places.get(turnId)!;
     return inclusive ? place.boundary : place.previousBoundary;
+  }
+
+  /** The windows projected lately, while the file is as it was then. */
+  private recentWindows(source: PageSource, ino: number, size: number): TurnWindow[] {
+    const key = `${ino}:${size}:${source.leafUuid ?? ""}:${source.peersVersion}`;
+    if (this.recent.key !== key) this.recent = { key, windows: [] };
+    return this.recent.windows;
+  }
+
+  private remember(window: TurnWindow): TurnWindow {
+    this.recent.windows = [window, ...this.recent.windows.filter((entry) => entry !== window)].slice(0, RECENT_WINDOWS);
+    return window;
   }
 
   private serial<T>(work: () => Promise<T>): Promise<T> {
@@ -209,10 +231,11 @@ export class TranscriptPages {
       this.ends.clear();
     }
     const live = this.live;
+    this.recentWindows(source, ino, size);
     await readForward(source.path, live, size, this.ends);
     const key = `${live.start}:${live.end}:${source.leafUuid ?? ""}:${source.peersVersion}`;
-    if (live.cache?.key === key && (!live.cache.window.older || enough(live.cache.window.turns))) return live.cache.window;
-    const window = await this.fill(source, live, source.leafUuid, false, enough);
+    if (live.cache?.key === key && (!live.cache.window.older || enough(live.cache.window.turns))) return this.remember(live.cache.window);
+    const window = this.remember(await this.fill(source, live, source.leafUuid, false, enough));
     // The window stays a few pages long: it starts again at the turn before the kept ones (their context).
     const kept = Math.max(keep, KEPT_TURNS);
     const cut = window.projection.turnBoundaries.at(-kept - 1)?.firstUuid;
