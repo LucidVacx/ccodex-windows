@@ -112,6 +112,11 @@ const handlers = {
     if (params.sortDirection !== "asc") turns.reverse();
     return paginate(turns, params);
   },
+  "thread/items/list": (_connection, params) => {
+    const items = threads.get(params.threadId).turns.find((turn) => turn.id === params.turnId).items.map((item) => ({ turnId: params.turnId, item }));
+    if (params.sortDirection === "desc") items.reverse();
+    return paginate(items, params);
+  },
   "thread/fork": (connection, params) => {
     const source = threads.get(params.threadId);
     let turns = source.turns;

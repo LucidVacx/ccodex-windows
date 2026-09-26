@@ -364,10 +364,9 @@ export class Lineages {
   private async segmentOf(segments: readonly Segment[], turnId: string): Promise<number> {
     const locate = () => segments.findIndex((segment) => turnId === `switch:${segment.threadId.replaceAll("-", "")}` || this.turnSegments.get(turnId) === segment.threadId);
     let cursor: string | null = null;
-    while (locate() < 0) {
-      const page: { nextCursor: string | null } = await this.stitchedPage(segments, { limit: 100, cursor, itemsView: "notLoaded" });
-      if (!page.nextCursor) throw invalidRequest(`turn not found: ${turnId}`);
-      cursor = page.nextCursor;
+    for (let more = true; locate() < 0; more = cursor !== null) {
+      if (!more) throw invalidRequest(`turn not found: ${turnId}`);
+      cursor = (await this.stitchedPage(segments, { limit: 100, cursor, itemsView: "notLoaded" })).nextCursor;
     }
     return locate();
   }

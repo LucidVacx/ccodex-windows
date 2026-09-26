@@ -671,6 +671,15 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       "contextCompaction", "user:third", "agent:gpt: third"]);
   });
 
+  it("pages a switched thread's oldest turn items by its id alone (Desktop after a daemon restart, turns cached)", async () => {
+    const threadId = await stockThread();
+    await client.turn(threadId, "first");
+    await client.turn(threadId, "second", { model: CLAUDE });
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    const page = await client.request("thread/items/list", { threadId, turnId: thread.turns[0].id, limit: 100, sortDirection: "desc" });
+    expect(page.data.map((entry: any) => entry.item.type)).toContain("userMessage");
+  });
+
   it("describes a Claude thread's environment like stock does (Desktop files remote projects' threads by it)", async () => {
     const { thread } = await client.request("thread/start", { model: CLAUDE, cwd: "/work/remote-project" });
     const environments = [{ environmentId: "local", cwd: "/work/remote-project", runtimeWorkspaceRoots: ["/work/remote-project"] }];
