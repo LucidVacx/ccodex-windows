@@ -62,11 +62,14 @@ function withSegment(cursor: string, segment: number): string {
   return JSON.stringify({ ...JSON.parse(cursor), segment });
 }
 
-/** The cursor as the segment's backend wrote it. */
-function ownCursor(cursor: string): string {
+/**
+ * The cursor as the segment's backend wrote it. Stock's names the thread it pages, and a client got that id rewritten
+ * to the public one: it names the segment's backend again.
+ */
+function ownCursor(cursor: string, threadId: string): string {
   try {
     const { segment: _, ...own } = JSON.parse(cursor) as Record<string, unknown>;
-    return JSON.stringify(own);
+    return JSON.stringify("requestedThreadId" in own ? { ...own, requestedThreadId: threadId } : own);
   } catch {
     return cursor;
   }
@@ -393,8 +396,11 @@ export class Lineages {
   /** A client's cursor: a page's position, or a turn anchor (`turnsBackwardsCursor`, `backwardsCursor`). */
   private async pagePosition(segments: readonly Segment[], cursor: string): Promise<PagePosition> {
     const parsed = JSON.parse(cursor) as PagePosition & { turnId?: string; includeAnchor?: boolean; requestedThreadId?: string };
-    // Stock's own cursor from before the thread switched provider (a client scrolls up with it): its thread's page.
-    if (parsed.turnId === undefined) return parsed.segment === undefined ? { segment: segments.findIndex((segment) => segment.threadId === parsed.requestedThreadId), cursor } : parsed;
+    // A page's position, or stock's own cursor from before the thread switched provider (a client scrolls up with it): its thread's page.
+    if (parsed.turnId === undefined) {
+      const at = parsed.segment === undefined ? { segment: segments.findIndex((segment) => segment.threadId === parsed.requestedThreadId), cursor } : parsed;
+      return { ...at, cursor: at.cursor && ownCursor(at.cursor, segments[at.segment]!.threadId) };
+    }
     const anchor = { turnId: parsed.turnId, include: parsed.includeAnchor === true };
     const segment = parsed.segment ?? await this.segmentOf(segments, anchor.turnId);
     if (anchor.turnId.startsWith("switch:")) return anchor.include ? { segment, cursor: null, marker: null } : this.segmentStart(segments, segment - 1);
@@ -427,7 +433,7 @@ export class Lineages {
         ? paginateItems(marker, { ...params, cursor: null })
         : { data: [], nextCursor: null, backwardsCursor: null };
     }
-    let cursor = params.cursor ? ownCursor(params.cursor) : null;
+    let cursor = params.cursor ? ownCursor(params.cursor, segment.threadId) : null;
     if (anchorSegment !== undefined && anchorSegment !== index) {
       if (anchorSegment > index !== ((params.sortDirection ?? "asc") === "desc")) return { data: [], nextCursor: null, backwardsCursor: null };
       cursor = null;

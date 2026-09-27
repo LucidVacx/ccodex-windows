@@ -82,6 +82,19 @@ function paginate(list, params) {
   return { data, nextCursor: offset + limit < list.length ? String(offset + limit) : null, backwardsCursor: null };
 }
 
+// Like stock's, a cursor names the thread it pages, and pages no other.
+const cursorOf = (threadId, offset) => JSON.stringify({ requestedThreadId: threadId, offset });
+function stockPage(list, params) {
+  let offset = null;
+  if (params.cursor) {
+    const cursor = JSON.parse(params.cursor);
+    if (cursor.requestedThreadId !== params.threadId) throw Object.assign(new Error(`invalid cursor ${params.cursor}`), { code: -32600 });
+    offset = cursor.offset;
+  }
+  const page = paginate(list, { ...params, cursor: offset });
+  return { ...page, nextCursor: page.nextCursor && cursorOf(params.threadId, Number(page.nextCursor)) };
+}
+
 const config = { model: "gpt-6-luna" };
 const handlers = {
   initialize: (connection) => { connection.initialized = true; return { userAgent: "fake-stock/0.156.0", codexHome: "/fake", platformFamily: "unix", platformOs: "linux" }; },
@@ -96,7 +109,10 @@ const handlers = {
     if (!thread) throw Object.assign(new Error(`no rollout found for thread id ${params.threadId}`), { code: -32600 });
     if (params.path && params.path !== thread.path) throw new Error(`cannot resume running thread ${thread.id} with stale path`);
     thread.subscribers.add(connection);
-    return { thread: params.excludeTurns ? summary(thread) : full(thread), ...settings(thread), initialTurnsPage: null };
+    return {
+      thread: params.excludeTurns ? summary(thread) : full(thread), ...settings(thread), initialTurnsPage: null,
+      itemsBackwardsCursor: thread.turns.length ? cursorOf(thread.id, 0) : null,
+    };
   },
   "thread/read": (_connection, params) => ({ thread: params.includeTurns ? full(threads.get(params.threadId)) : summary(threads.get(params.threadId)) }),
   "thread/list": (_connection, params) => {
@@ -110,14 +126,12 @@ const handlers = {
   "thread/turns/list": (_connection, params) => {
     const turns = [...threads.get(params.threadId).turns];
     if (params.sortDirection !== "asc") turns.reverse();
-    // Like stock's, a turns cursor names the thread it pages.
-    const page = paginate(turns, { ...params, cursor: params.cursor ? JSON.parse(params.cursor).offset : null });
-    return { ...page, nextCursor: page.nextCursor && JSON.stringify({ requestedThreadId: params.threadId, offset: Number(page.nextCursor) }) };
+    return stockPage(turns, params);
   },
   "thread/items/list": (_connection, params) => {
     const items = threads.get(params.threadId).turns.find((turn) => turn.id === params.turnId).items.map((item) => ({ turnId: params.turnId, item }));
     if (params.sortDirection === "desc") items.reverse();
-    return paginate(items, params);
+    return stockPage(items, params);
   },
   "thread/fork": (connection, params) => {
     const source = threads.get(params.threadId);

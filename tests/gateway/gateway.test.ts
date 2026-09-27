@@ -1016,6 +1016,30 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(await page(nextCursor)).toEqual(before);
   });
 
+  it("opens and pages a claude → gpt thread with stock's cursors as the client got them (its backend id read as the public id)", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one");
+    for (const word of ["two", "three"]) await client.turn(threadId, word, { model: "gpt-6-luna" });
+    const desktop = await gateway.connect();
+    const resumed = await desktop.request("thread/resume", { threadId, excludeTurns: true });
+    const turns: any[] = [];
+    let cursor = resumed.turnsBackwardsCursor;
+    do {
+      const page: any = await desktop.request("thread/turns/list", { threadId, cursor, limit: 1, itemsView: "full", sortDirection: "desc" });
+      turns.push(...page.data);
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(itemsOf(turns.reverse())).toEqual(["user:one", "agent:claude: one", "contextCompaction", "user:two", "agent:gpt: two", "user:three", "agent:gpt: three"]);
+    const items: string[] = [];
+    cursor = resumed.itemsBackwardsCursor;
+    do {
+      const page: any = await desktop.request("thread/items/list", { threadId, turnId: turns.at(-1).id, cursor, limit: 1, sortDirection: "desc" });
+      items.push(...itemsOf([{ items: page.data.map((entry: any) => entry.item) }]));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(items).toEqual(["agent:gpt: three", "user:three"]);
+  });
+
   it("describes a Claude thread's environment like stock does (Desktop files remote projects' threads by it)", async () => {
     const { thread } = await client.request("thread/start", { model: CLAUDE, cwd: "/work/remote-project" });
     const environments = [{ environmentId: "local", cwd: "/work/remote-project", runtimeWorkspaceRoots: ["/work/remote-project"] }];

@@ -324,6 +324,42 @@ const scenarios = {
   },
 
   /**
+   * A Claude chat now on GPT, opened like Desktop after a restart: resume, then turns and items paged with the stock
+   * cursors it handed out (they name the GPT backend, which the client reads as the chat's id).
+   */
+  async reopenClaudeToGpt() {
+    const { thread } = await client.request("thread/start", { model: state.haiku, cwd: WORK });
+    await client.turn(thread.id, "Reply with exactly: ONE");
+    await client.turn(thread.id, "Reply with exactly: TWO", { model: GPT }, 400_000);
+    await client.turn(thread.id, "Reply with exactly: THREE", { model: GPT });
+    const { thread: read } = await client.request("thread/read", { threadId: thread.id, includeTurns: true });
+    const fresh = await Client.connect();
+    const resumed = await fresh.request("thread/resume", { threadId: thread.id, excludeTurns: true });
+    const turns = [];
+    for (let cursor = resumed.turnsBackwardsCursor; cursor;) {
+      const page = await fresh.request("thread/turns/list", { threadId: thread.id, cursor, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
+      turns.unshift(...page.data.map((turn) => turn.id).reverse());
+      cursor = page.nextCursor;
+    }
+    check(JSON.stringify(turns) === JSON.stringify(read.turns.map((turn) => turn.id)), "paged turns = stitched turns", { turns, read: read.turns.map((turn) => turn.id) });
+    const itemIds = (turn) => turn.items.map((item) => item.id).reverse();
+    for (const turn of read.turns) {
+      const page = await fresh.request("thread/items/list", { threadId: thread.id, turnId: turn.id, cursor: resumed.itemsBackwardsCursor, limit: 100, sortDirection: "desc" });
+      check(JSON.stringify(page.data.map((entry) => entry.item.id)) === JSON.stringify(itemIds(turn)), "turn items from resume's items cursor", { turn: turn.id, page: page.data.map((entry) => entry.item.id), read: itemIds(turn) });
+    }
+    const newest = read.turns.at(-1);
+    const items = [];
+    for (let cursor = resumed.itemsBackwardsCursor; cursor;) {
+      const page = await fresh.request("thread/items/list", { threadId: thread.id, turnId: newest.id, cursor, limit: 1, sortDirection: "desc" });
+      items.push(...page.data.map((entry) => entry.item.id));
+      cursor = page.nextCursor;
+    }
+    check(JSON.stringify(items) === JSON.stringify(itemIds(newest)), "newest turn's items paged one by one", { items, read: itemIds(newest) });
+    fresh.close();
+    return { turns: turns.length, items: items.length, itemsCursor: resumed.itemsBackwardsCursor };
+  },
+
+  /**
    * A chat open in Desktop switched by another client (a script, the TUI, a phone): like stock, Desktop sees the switch
    * turn and the next ones live, and its composer gets the model switched to (its next message stays on that provider).
    */
