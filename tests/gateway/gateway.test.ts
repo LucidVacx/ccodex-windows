@@ -115,6 +115,42 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(pages.flat().reverse()).toEqual(turns.map((n) => `user:question ${n} / agent:answer ${n}`));
   });
 
+  it("shows a Claude turn cut off with its process (a daemon restart mid-command) as interrupted, like stock's stale turns; a running one stays running", async () => {
+    const directory = join(process.env.CLAUDE_CONFIG_DIR!, "projects", "-cut");
+    mkdirSync(directory, { recursive: true });
+    const id = "0a0a0a0a-0000-4000-8000-000000000002";
+    const at = (n: number) => ({ sessionId: id, cwd: "/cut", timestamp: new Date(Date.UTC(2026, 8, 27, 0, 0, n)).toISOString() });
+    const records = [
+      { type: "user", uuid: "u1", parentUuid: null, ...at(1), message: { role: "user", content: "wait for the restart" } },
+      { type: "assistant", uuid: "a1", parentUuid: "u1", ...at(2), message: { role: "assistant", model: "claude-opus-5-5", id: "msg_1", stop_reason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_cut", name: "Bash", input: { command: "until grep -q OK restart.log; do sleep 2; done" } }] } },
+      { type: "user", uuid: "u2", parentUuid: "a1", ...at(3), message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_cut", content: "Exit code 137", is_error: true }] } },
+    ];
+    writeFileSync(join(directory, `${id}.jsonl`), records.map((line) => `${JSON.stringify(line)}\n`).join(""));
+    await client.waitFor("thread/started", (params) => params.thread.id === id);
+    const resumed = await client.request("thread/resume", { threadId: id, excludeTurns: true });
+    expect(resumed.thread.status.type).not.toBe("active");
+    const page = await client.request("thread/turns/list", { threadId: id, limit: 5, itemsView: "notLoaded", sortDirection: "desc" });
+    expect(page.data.map((turn: any) => turn.status)).toEqual(["interrupted"]);
+    const { thread } = await client.request("thread/read", { threadId: id, includeTurns: true });
+    expect(thread.turns.map((turn: any) => turn.status)).toEqual(["interrupted"]);
+    expect(thread.turns[0].items.find((item: any) => item.type === "commandExecution")).toMatchObject({ status: "failed", aggregatedOutput: "Exit code 137" });
+
+    // Mid-command (Claude waits for the approval): the turn runs, and so does the thread in the sidebar.
+    const threadId = await claudeThread();
+    let seen: unknown;
+    client.onRequest = async () => {
+      seen = {
+        turns: (await client.request("thread/turns/list", { threadId, limit: 5, sortDirection: "desc" })).data.map((turn: any) => turn.status),
+        read: (await client.request("thread/read", { threadId, includeTurns: true })).thread.turns.map((turn: any) => turn.status),
+        thread: (await client.request("thread/read", { threadId })).thread.status.type,
+      };
+      return { decision: "accept" };
+    };
+    await client.turn(threadId, "this needs approval");
+    expect(seen).toEqual({ turns: ["inProgress"], read: ["inProgress"], thread: "active" });
+  });
+
   it("keeps a deleted Claude thread gone when Claude writes its closing metadata into the file afterwards", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "hello");

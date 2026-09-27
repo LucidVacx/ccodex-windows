@@ -442,7 +442,9 @@ export class ClaudeThreads {
       items: turn.items.map((item) => running.has(item.id) ? { ...item, status: "inProgress", exitCode: null, aggregatedOutput: null, durationMs: null } as ThreadItem : item),
     })) : [...history];
     const live = session?.liveTurn();
-    if (!live) return turns;
+    // Stock's stale turns: one the transcript leaves unfinished with none running here (its Claude died with a daemon
+    // restart) was interrupted. A sub-agent runs in its parent's session.
+    if (!live) return threadId.startsWith("agent-") ? turns : turns.map((turn) => turn.status === "inProgress" ? { ...turn, status: "interrupted" } : turn);
     const index = turns.findIndex((turn) => turn.id === live.id);
     if (index >= 0) turns = [...turns.slice(0, index), { ...turns[index]!, status: "inProgress", completedAt: null }];
     else turns.push(live);
