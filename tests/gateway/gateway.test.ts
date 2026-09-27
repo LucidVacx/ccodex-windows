@@ -725,6 +725,22 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
   });
 
+  it("ends a Claude chat's background tasks before the switch away from it compacts (a task ending then would wake Claude up unseen)", async () => {
+    fakeClaude.backgroundMs = 1_500;
+    const threadId = await claudeThread();
+    await client.turn(threadId, "watch in background: sleep 1");
+    let compactedAfter: string[] | undefined;
+    const prompts = fakeClaude.prompts;
+    const push = prompts.push.bind(prompts);
+    prompts.push = (...entries) => {
+      if (entries.some((entry) => entry.text.startsWith("/compact"))) compactedAfter = fakeClaude.calls.map((call) => call.method);
+      return push(...entries);
+    };
+    await client.turn(threadId, "go", { model: "gpt-6-luna" });
+    prompts.push = push;
+    expect(compactedAfter).toContain("stopTask");
+  });
+
   it("takes Desktop's goal mode (a `/goal X` turn, then goal X set) as one goal that edits and pauses replace", async () => {
     const threadId = await claudeThread();
     const texts = () => fakeClaude.prompts.map((prompt) => prompt.text);

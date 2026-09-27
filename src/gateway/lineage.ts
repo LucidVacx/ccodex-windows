@@ -547,8 +547,10 @@ export class Lineages {
     };
     if (source.provider === "claude") {
       const session = this.gateway.claude.session(source.threadId);
-      // The goal goes on with the chat's next backend.
+      // The goal goes on with the chat's next backend; its background tasks end here (one ending during the compaction
+      // would wake Claude up for work nobody sees).
       const goal = await this.gateway.claude.takeGoal(source.threadId);
+      await session.stopTasks();
       // Its compaction is no turn of the chat: it shows inside the user's turn.
       for (const viewer of viewers) this.gateway.unsubscribe(source.threadId, viewer);
       let summary = "";
