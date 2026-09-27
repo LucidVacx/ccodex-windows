@@ -387,7 +387,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.turn(threadId, "/ccstatus");
     expect(answerOf(threadId)).toMatch(/^### ◆ CCodex `[^`]+`\n\n\*\*֎ /u);
     // Claude's limits come from its /usage data before any Claude turn.
-    expect(answerOf(threadId)).toContain("| **Claude 5h** | `█░░░░░░░░░░░░░░░░░░░` 5% |\n| **Claude week** | `█░░░░░░░░░░░░░░░░░░░` 3% |");
+    expect(answerOf(threadId)).toContain("| **Claude 5h** | `█░░░░░░░░░░░░░░░░░░░` 5% |\n| **Claude week** | `█░░░░░░░░░░░░░░░░░░░` 3% |\n| **Claude Fable week** | `████████░░░░░░░░░░░░` 40% |");
     const claude = await claudeThread();
     // The skill Desktop's `/` menu offers arrives as its chip.
     const chip = `[$ccodex:status](${(await client.request("skills/list", {})).data[0].skills[0].path}) `;

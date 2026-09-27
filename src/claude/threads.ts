@@ -72,6 +72,8 @@ export class ClaudeThreads {
   private usage?: { at: number; done: Promise<void> };
   /** Why Claude's plan limits could not be read, when they could not. */
   public usageError?: string;
+  /** Weekly windows of single models (e.g. Fable), from Claude's `/usage` data. */
+  public modelLimits: { name: string; window: RateLimitWindow }[] = [];
   private stopWatching?: () => void;
   public onTurnCompleted?: (threadId: string, turnId: string) => void;
 
@@ -661,6 +663,10 @@ export class ClaudeThreads {
     try {
       const usage = await withProbeQuery(this.config, undefined, (probe) => probe.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }));
       this.usageError = usage.rate_limits_available ? undefined : "no plan limits for this login (API key or cloud provider)";
+      this.modelLimits = (usage.rate_limits?.model_scoped ?? []).filter((row) => typeof row.utilization === "number").map((row) => ({
+        name: row.display_name,
+        window: { usedPercent: Math.round(row.utilization!), windowDurationMins: 10_080, resetsAt: row.resets_at ? Math.floor(Date.parse(row.resets_at) / 1000) : null },
+      }));
       for (const type of ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] as const) {
         const window = usage.rate_limits?.[type];
         if (typeof window?.utilization !== "number") continue;

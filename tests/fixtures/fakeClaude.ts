@@ -401,7 +401,7 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
     supportedCommands: () => Promise.resolve([{ name: "review-pr", description: "Review a PR", argumentHint: "<n>" }]),
     usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () => Promise.resolve({
       rate_limits_available: true,
-      rate_limits: { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 3, resets_at: null }, seven_day_opus: null },
+      rate_limits: { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 3, resets_at: null }, seven_day_opus: null, model_scoped: [{ display_name: "Fable", utilization: 40, resets_at: null }] },
     }),
     askSideQuestion: (question: string) => Promise.resolve({ response: `side: ${question}` }),
     interrupt: record("interrupt"),
