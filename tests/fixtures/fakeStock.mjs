@@ -110,7 +110,9 @@ const handlers = {
   "thread/turns/list": (_connection, params) => {
     const turns = [...threads.get(params.threadId).turns];
     if (params.sortDirection !== "asc") turns.reverse();
-    return paginate(turns, params);
+    // Like stock's, a turns cursor names the thread it pages.
+    const page = paginate(turns, { ...params, cursor: params.cursor ? JSON.parse(params.cursor).offset : null });
+    return { ...page, nextCursor: page.nextCursor && JSON.stringify({ requestedThreadId: params.threadId, offset: Number(page.nextCursor) }) };
   },
   "thread/items/list": (_connection, params) => {
     const items = threads.get(params.threadId).turns.find((turn) => turn.id === params.turnId).items.map((item) => ({ turnId: params.turnId, item }));

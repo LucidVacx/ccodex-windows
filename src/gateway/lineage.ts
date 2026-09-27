@@ -366,8 +366,9 @@ export class Lineages {
 
   /** A client's cursor: a page's position, or a turn anchor (`turnsBackwardsCursor`, `backwardsCursor`). */
   private async pagePosition(segments: readonly Segment[], cursor: string): Promise<PagePosition> {
-    const parsed = JSON.parse(cursor) as PagePosition & { turnId?: string; includeAnchor?: boolean };
-    if (parsed.turnId === undefined) return parsed;
+    const parsed = JSON.parse(cursor) as PagePosition & { turnId?: string; includeAnchor?: boolean; requestedThreadId?: string };
+    // Stock's own cursor from before the thread switched provider (a client scrolls up with it): its thread's page.
+    if (parsed.turnId === undefined) return parsed.segment === undefined ? { segment: segments.findIndex((segment) => segment.threadId === parsed.requestedThreadId), cursor } : parsed;
     const anchor = { turnId: parsed.turnId, include: parsed.includeAnchor === true };
     const segment = parsed.segment ?? await this.segmentOf(segments, anchor.turnId);
     if (anchor.turnId.startsWith("switch:")) return anchor.include ? { segment, cursor: null, marker: null } : this.segmentStart(segments, segment - 1);
