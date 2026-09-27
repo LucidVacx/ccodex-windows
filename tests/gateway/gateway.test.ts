@@ -430,6 +430,13 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       await client.turn(claude, command);
       expect(answerOf(claude)).toContain("**❋ Claude Opus 5.5** · Ask · 🟡 Idle");
     }
+    // Or as its `$` text plus the skill item.
+    const path = (await client.request("skills/list", {})).data[0].skills[0].path;
+    const answers = client.notifications("item/completed", claude).length;
+    await client.turn(claude, "", { input: [
+      { type: "text", text: "$ccodex:status", text_elements: [] }, { type: "skill", name: "ccodex:status", path }] });
+    expect(client.notifications("item/completed", claude).length).toBeGreaterThan(answers);
+    expect(answerOf(claude)).toContain("**❋ Claude Opus 5.5** · Ask · 🟡 Idle");
     expect(answerOf(claude)).toContain(`_Thread \`${claude}\``);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.notifications("thread/status/changed", claude).at(-1)!.params.status).toEqual({ type: "idle" });
