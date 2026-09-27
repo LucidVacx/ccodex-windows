@@ -91,6 +91,17 @@ describe("Claude going on after an answer: a turn of its own, as history shows i
     expect(fakeClaude.calls.some((call) => call.method === "stopTask")).toBe(false);
   });
 
+  it("announces a background command with its process while its turn runs (Desktop shows a background terminal only then)", async () => {
+    fakeClaude.backgroundMs = 3_000;
+    const threadId = await chat();
+    const since = client.messages.length;
+    const first = await client.turn(threadId, "watch in background: sleep 3");
+    const started = client.messages.slice(since).filter((message) => message.method === "item/started" && message.params.item.type === "commandExecution");
+    expect(started.at(-1)?.params.item).toMatchObject({ status: "inProgress", processId: "bg1" });
+    const completedAt = client.messages.findIndex((message) => message.method === "turn/completed" && message.params.turn.id === first.turn.id);
+    expect(client.messages.indexOf(started.at(-1)!)).toBeLessThan(completedAt);
+  });
+
   it("stops Claude's background commands from Desktop's background terminals panel: each ends as stopped in its turn", async () => {
     fakeClaude.backgroundMs = 3_000;
     const threadId = await chat();

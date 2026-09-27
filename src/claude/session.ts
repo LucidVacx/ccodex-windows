@@ -1009,6 +1009,10 @@ export class ClaudeSession {
       if (taskId && this.turn) {
         const item = { ...tool.item, processId: taskId } as ThreadItem;
         this.background.set(taskId, { item, turnId: this.turn.id, startedAtMs: tool.state.startedAtMs });
+        // Desktop shows a background terminal only for a command with its process (stock's has it from the start).
+        const index = this.turn.items.findIndex((candidate) => candidate.id === item.id);
+        if (index >= 0) this.turn.items[index] = item;
+        this.emit("item/started", { item, threadId: this.threadId, turnId: this.turn.id, startedAtMs: tool.state.startedAtMs });
         continue;
       }
       // The result tells where a message went (its msg_id) when the call alone did not.
