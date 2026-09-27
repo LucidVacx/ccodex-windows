@@ -19,9 +19,10 @@ import { nativeThread, type TranscriptProjection } from "./native/projector.js";
 import { projectSubagents, type ProjectedSubagent } from "./native/subagents.js";
 import { readTranscriptRecords } from "./native/records.js";
 import { preview, summarizeTranscript, userText, type TranscriptHeader } from "./native/summary.js";
-import { codexPermissions, mapClaudeModel, mapSkill, permissionSettings, withProbeQuery } from "./sdk.js";
+import { claudeMode, codexPermissions, mapClaudeModel, mapSkill, permissionSettings, withProbeQuery } from "./sdk.js";
 import { killProcesses, sessionProcesses, type SessionProcess } from "./processes.js";
 import { ClaudeSession, type SessionSettings } from "./session.js";
+import type { Meta } from "../meta.js";
 
 interface SideThread {
   readonly id: string;
@@ -52,6 +53,12 @@ const IDLE_MS = Number(process.env.CCODEX_E2E_IDLE_MS) || 30 * 60_000;
 const RESUME_WARM_MS = Number(process.env.CCODEX_E2E_RESUME_WARM_MS) || 10_000;
 /** Claude processes kept at most (each holds its session in memory: 250–550 MB); tests lower it. */
 const MAX_PROCESSES = Number(process.env.CCODEX_E2E_MAX_PROCESSES) || 10;
+
+/** A chat's permissions and plan mode from the mode its transcript last recorded (in plan mode, meta.json keeps its own). */
+function recordedPermissions(threadId: string, recorded: string | null | undefined, meta: Meta): Pick<SessionSettings, "permissionMode" | "plan"> {
+  if (recorded !== "plan") return { permissionMode: (recorded ?? "default") as PermissionMode, plan: false };
+  return { permissionMode: (meta.planPermission(threadId) ?? "default") as PermissionMode, plan: true };
+}
 
 /** The Claude side of the gateway: catalog of native sessions, live sessions, side chats, models, skills. */
 export class ClaudeThreads {
@@ -269,8 +276,7 @@ export class ClaudeThreads {
     return nativeThread(session.threadId, {
       cwd: session.settings.cwd, gitBranch: null, createdAt: now, updatedAt: now, preview: "",
       customTitle: this.pendingNames.get(session.threadId) ?? null, aiTitle: null, model: session.settings.model, reasoningEffort: session.settings.effort,
-      serviceTier: session.settings.fast ? "fast" : null, permissionMode: session.settings.permissionMode,
-      planFrom: session.settings.planFrom ?? null, cliVersion: null, goal: null,
+      serviceTier: session.settings.fast ? "fast" : null, permissionMode: claudeMode(session.settings), cliVersion: null, goal: null,
     }, { status: this.status(session.threadId) });
   }
 
@@ -530,8 +536,7 @@ export class ClaudeThreads {
       model: summary?.model ? this.pickerModel(summary.model) : this.defaultModel,
       effort: summary?.reasoningEffort ?? null,
       fast: summary?.serviceTier === "fast",
-      permissionMode: (summary?.permissionMode ?? "default") as PermissionMode,
-      ...(summary?.permissionMode === "plan" && summary.planFrom ? { planFrom: summary.planFrom as PermissionMode } : {}),
+      ...recordedPermissions(threadId, summary?.permissionMode, this.gateway.meta),
     };
   }
 
@@ -570,7 +575,7 @@ export class ClaudeThreads {
       effort: settings.effort,
       summary: null,
       collaborationMode: {
-        mode: settings.permissionMode === "plan" ? "plan" : "default",
+        mode: settings.plan ? "plan" : "default",
         settings: { model: response.model, reasoning_effort: settings.effort, developer_instructions: null },
       },
       multiAgentMode: "explicitRequestOnly",
@@ -803,7 +808,7 @@ export class ClaudeThreads {
       ...nativeThread(side.id, {
         cwd: side.cwd, gitBranch: null, createdAt: side.createdAt, updatedAt: side.createdAt, preview: "",
         customTitle: null, aiTitle: null, model: settings.model, reasoningEffort: settings.effort, serviceTier: null,
-        permissionMode: null, planFrom: null, cliVersion: null, goal: null,
+        permissionMode: null, cliVersion: null, goal: null,
       }, { status: { type: "idle" } }),
       ephemeral: true,
       forkedFromId: side.sourceId,
@@ -1020,7 +1025,7 @@ export class ClaudeThreads {
   private async startThread(connection: Connection, params: JsonObject): Promise<JsonObject> {
     await this.models().catch(() => undefined);
     const settings = this.settingsFrom(params, {
-      cwd: params.cwd ?? process.cwd(), model: this.defaultModel, effort: null, fast: false, permissionMode: "default",
+      cwd: params.cwd ?? process.cwd(), model: this.defaultModel, effort: null, fast: false, permissionMode: "default", plan: false,
     });
     const session = this.create(settings);
     const threadId = session.threadId;
@@ -1223,6 +1228,7 @@ export class ClaudeThreads {
       effort: settings.effort,
       fast: settings.fast,
       permissionMode: settings.permissionMode,
+      plan: settings.plan,
       cwd: settings.cwd,
       loaded: session !== undefined,
       process: session?.loaded ?? false,

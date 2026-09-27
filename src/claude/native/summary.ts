@@ -13,8 +13,6 @@ export interface TranscriptHeader {
   readonly reasoningEffort: string | null;
   readonly serviceTier: string | null;
   readonly permissionMode: string | null;
-  /** The last mode other than plan: what leaving plan mode gives back. */
-  readonly planFrom: string | null;
   readonly cliVersion: string | null;
   /** Claude's `/goal`: set by the command, updated by `goal_status` attachments, cleared by `/goal clear`. */
   readonly goal: NativeGoal | null;
@@ -94,7 +92,6 @@ const EMPTY_STATE: TranscriptSummaryState = {
   reasoningEffort: null,
   serviceTier: null,
   permissionMode: null,
-  planFrom: null,
   cliVersion: null,
   goal: null,
   hasCreatedAt: false,
@@ -140,7 +137,7 @@ export class TranscriptSummarizer {
         this.state.preview = preview(slashCommand(text) ?? text);
         this.state.hasFirstPrompt = true;
       }
-      if (record.permissionMode !== undefined) this.mode(record.permissionMode);
+      if (record.permissionMode !== undefined) this.state.permissionMode = record.permissionMode;
       const sent = record.toolUseResult?.msg_id;
       if (typeof sent === "string") this.state.sentMessages = [...this.state.sentMessages, sent];
       const received = record.origin?.kind === "peer" ? record.origin.msg_id : undefined;
@@ -165,13 +162,8 @@ export class TranscriptSummarizer {
     } else if (record.type === "ai-title") {
       this.state.aiTitle = record.aiTitle ?? null;
     } else if (record.type === "permission-mode" && typeof record.permissionMode === "string") {
-      this.mode(record.permissionMode);
+      this.state.permissionMode = record.permissionMode;
     }
-  }
-
-  private mode(mode: string): void {
-    this.state.permissionMode = mode;
-    if (mode !== "plan") this.state.planFrom = mode;
   }
 
   private goalCommand(args: string, output: string, timestamp: number): void {
@@ -196,7 +188,6 @@ export class TranscriptSummarizer {
       reasoningEffort: this.state.reasoningEffort,
       serviceTier: this.state.serviceTier,
       permissionMode: this.state.permissionMode,
-      planFrom: this.state.planFrom,
       cliVersion: this.state.cliVersion,
       goal: this.state.goal,
     };

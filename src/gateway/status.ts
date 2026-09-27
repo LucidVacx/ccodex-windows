@@ -51,7 +51,7 @@ interface Window {
 }
 
 const PERMISSIONS: Record<string, string> = {
-  default: "Ask", acceptEdits: "Accept edits", plan: "Plan", auto: "Auto", dontAsk: "Don't ask", bypassPermissions: "Bypass",
+  default: "Ask", acceptEdits: "Accept edits", auto: "Auto", dontAsk: "Don't ask", bypassPermissions: "Bypass",
 };
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -96,7 +96,7 @@ async function statusText(gateway: Gateway, connection: Connection, threadId: st
     const state = gateway.claude.state(current);
     const usage = state.lastUsage as JsonObject | undefined;
     const status = state.running ? "🟢 Running" : state.process ? "🟢 Ready" : "🟡 Idle";
-    header = [`**❋ Claude ${state.model}**`, state.effort && capital(state.effort), state.fast && "Fast", PERMISSIONS[state.permissionMode] ?? state.permissionMode, status]
+    header = [`**❋ Claude ${state.model}**`, state.effort && capital(state.effort), state.fast && "Fast", PERMISSIONS[state.permissionMode] ?? state.permissionMode, state.plan && "Plan", status]
       .filter(Boolean).join(" · ");
     if (usage?.totalTokens && state.contextWindow) {
       const percent = Math.round(100 * usage.inputTokens / Number(state.contextWindow));

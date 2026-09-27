@@ -319,14 +319,18 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(asked).toEqual([]);
   });
 
-  it("leaves plan mode for the mode the chat had before it, after a restart too (read from the transcript)", async () => {
+  it("keeps a Claude chat's permissions apart from plan mode, after a restart too (meta.json: its transcript records only plan)", async () => {
     const threadId = await claudeThread();
     const asked: any[] = [];
     const mode = (name: string) => ({ mode: name, settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } });
     await client.turn(threadId, "one", { approvalPolicy: "never", permissions: ":danger-full-access" });
     await client.turn(threadId, "propose a plan: 1. add the flag", { collaborationMode: mode("plan") });
+    // Plan mode shows the chat's own permissions, like stock's.
+    expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings).toMatchObject({ approvalPolicy: "never", collaborationMode: { mode: "plan" } });
+    const meta = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8"));
+    expect(meta.planPermissions).toEqual({ [threadId]: "bypassPermissions" });
     await gateway.stop();
-    gateway = await startTestGateway();
+    gateway = await startTestGateway({}, meta);
     client = await gateway.connect();
     client.onRequest = (message) => { asked.push(message); return { decision: "accept" }; };
     await client.request("thread/resume", { threadId });
@@ -334,6 +338,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.turn(threadId, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag; this needs approval", { collaborationMode: mode("default") });
     expect(fakeClaude.options.at(-1)!.permissionMode).toBe("bypassPermissions");
     expect(asked).toEqual([]);
+    expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).planPermissions).toEqual({});
   });
 
   it("puts Claude's question to the user in the client's own question UI, even with full access", async () => {

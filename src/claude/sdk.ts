@@ -45,16 +45,20 @@ function chosenPermissionMode(params: JsonObject, current: PermissionMode): Perm
 }
 
 /**
- * The chat's permission mode after a Codex settings change: it changes only with the permission fields Desktop sends
- * (Desktop sends them as null to keep them); plan mode follows the collaboration mode and, left, gives back the mode
- * the chat had before it.
+ * The chat's permissions and plan mode after a Codex settings change, apart like stock's: the permission mode changes
+ * only with the permission fields Desktop sends (null to keep them), plan mode with the collaboration mode.
  */
-export function permissionSettings(params: JsonObject, current: Pick<SessionSettings, "permissionMode" | "planFrom">): Pick<SessionSettings, "permissionMode" | "planFrom"> {
-  const planned = current.permissionMode === "plan";
-  const kept = planned ? current.planFrom ?? "default" : current.permissionMode;
-  const base = chosenPermissionMode(params, kept) ?? kept;
+export function permissionSettings(params: JsonObject, current: Pick<SessionSettings, "permissionMode" | "plan">): Pick<SessionSettings, "permissionMode" | "plan"> {
   const collaboration = params.collaborationMode?.mode;
-  return (collaboration ? collaboration === "plan" : planned) ? { permissionMode: "plan", planFrom: base } : { permissionMode: base };
+  return {
+    permissionMode: chosenPermissionMode(params, current.permissionMode) ?? current.permissionMode,
+    plan: collaboration ? collaboration === "plan" : current.plan,
+  };
+}
+
+/** The mode Claude runs in: its plan mode while the chat is in plan mode. */
+export function claudeMode(settings: Pick<SessionSettings, "permissionMode" | "plan">): PermissionMode {
+  return settings.plan ? "plan" : settings.permissionMode;
 }
 
 export function codexPermissions(mode: string | null, cwd: string): CodexPermissions {

@@ -62,20 +62,20 @@ describe("native Claude thread settings", () => {
   it("round-trips Claude permission modes through the Codex settings Desktop sends back", () => {
     for (const mode of ["default", "auto", "dontAsk", "bypassPermissions"] as const) {
       const codex = codexPermissions(mode, cwd);
-      expect(permissionSettings({ ...codex, permissions: codex.activePermissionProfile.id }, { permissionMode: "default" })).toEqual({ permissionMode: mode });
+      expect(permissionSettings({ ...codex, permissions: codex.activePermissionProfile.id }, { permissionMode: "default", plan: false })).toEqual({ permissionMode: mode, plan: false });
     }
   });
 
-  it("keeps the chat's permission mode unless Desktop sends permission fields; plan mode gives back the mode before it", () => {
-    const full = { permissionMode: "bypassPermissions" } as const;
+  it("keeps the chat's permission mode unless Desktop sends permission fields; plan mode is apart from it", () => {
+    const full = { permissionMode: "bypassPermissions", plan: false } as const;
     // Desktop 26.924's turn/start: every permission field null, the collaboration mode always sent.
     const turnStart = { approvalPolicy: null, approvalsReviewer: null, permissions: null, sandboxPolicy: null, collaborationMode: { mode: "default" } };
     expect(permissionSettings(turnStart, full)).toEqual(full);
     expect(permissionSettings({ approvalsReviewer: "user" }, full)).toEqual(full);
-    expect(permissionSettings({ approvalsReviewer: "user" }, { permissionMode: "auto" })).toEqual({ permissionMode: "default" });
+    expect(permissionSettings({ approvalsReviewer: "user" }, { permissionMode: "auto", plan: false })).toEqual({ permissionMode: "default", plan: false });
     const planned = permissionSettings({ ...turnStart, collaborationMode: { mode: "plan" } }, full);
-    expect(planned).toEqual({ permissionMode: "plan", planFrom: "bypassPermissions" });
-    expect(permissionSettings({ approvalPolicy: "on-request" }, planned)).toEqual({ permissionMode: "plan", planFrom: "default" });
+    expect(planned).toEqual({ permissionMode: "bypassPermissions", plan: true });
+    expect(permissionSettings({ approvalPolicy: "on-request" }, planned)).toEqual({ permissionMode: "default", plan: true });
     expect(permissionSettings(turnStart, planned)).toEqual(full);
   });
 

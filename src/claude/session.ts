@@ -19,7 +19,7 @@ import { readTranscriptRecords, type UserRecord } from "./native/records.js";
 import { userText } from "./native/summary.js";
 import { claudeEffort, DELEGATION_OFF, DELEGATION_ON, ULTRA } from "./delegation.js";
 import { foreignOwner, peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
-import { baseOptions } from "./sdk.js";
+import { baseOptions, claudeMode } from "./sdk.js";
 import { endedBackground, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
 import type { ClaudeThreads } from "./threads.js";
 
@@ -29,9 +29,10 @@ export interface SessionSettings {
   model: string | null;
   effort: string | null;
   fast: boolean;
+  /** The chat's permissions (never Claude's plan mode: that is `plan`). */
   permissionMode: PermissionMode;
-  /** The mode plan mode gives back. */
-  planFrom?: PermissionMode;
+  /** Codex plan mode (the collaboration mode). */
+  plan: boolean;
 }
 
 interface ActiveTurn {
@@ -220,6 +221,12 @@ export class ClaudeSession {
   ) {
     this.exists = options.exists;
     this.resumeAt = options.resumeAt;
+    this.keepPlanPermission();
+  }
+
+  /** Claude's transcript records only its plan mode: the chat's own permissions wait in meta.json meanwhile. */
+  private keepPlanPermission(): void {
+    this.host.gateway.meta.setPlanPermission(this.threadId, this.settings.plan ? this.settings.permissionMode : null);
   }
 
   private resumeAt: string | undefined;
@@ -299,7 +306,7 @@ export class ClaudeSession {
       ...(settings.model ? { model: settings.model } : {}),
       ...(settings.effort ? { effort: claudeEffort(settings.effort) as never } : {}),
       ...(settings.fast ? { settings: { fastMode: true } } : {}),
-      permissionMode: settings.permissionMode,
+      permissionMode: claudeMode(settings),
       // Claude enters plan mode only as the user sets it (stock's collaboration mode).
       disallowedTools: ["EnterPlanMode"],
       // Claude 5 omits its thinking by default: summarized, it shows as the turn's reasoning summary like stock's.
@@ -488,12 +495,13 @@ export class ClaudeSession {
     if (!changed) return;
     const previous = this.settings;
     this.settings = next;
+    this.keepPlanPermission();
     // Like stock, every client with the chat open learns the change (Desktop's composer follows it).
     this.emit("thread/settings/updated", { threadId: this.threadId, threadSettings: this.host.threadSettings(next) });
     if (this.sdk) {
       if (next.model !== previous.model) await this.sdk.setModel(next.model ?? undefined);
       // The CLI settles the mode per model (no auto mode on Haiku falls back to default): a new model re-applies it.
-      if (next.permissionMode !== previous.permissionMode || next.model !== previous.model) await this.sdk.setPermissionMode(next.permissionMode);
+      if (claudeMode(next) !== claudeMode(previous) || next.model !== previous.model) await this.sdk.setPermissionMode(claudeMode(next));
       if (next.effort !== previous.effort || next.fast !== previous.fast) {
         await this.sdk.applyFlagSettings({ effortLevel: claudeEffort(next.effort) as never, fastMode: next.fast });
       }
@@ -1082,7 +1090,7 @@ export class ClaudeSession {
   private readonly canUseTool: CanUseTool = async (toolName, input, options) => {
     // Stock plan mode: the turn ends with the proposed plan (its item) and Desktop asks to implement it; accepting
     // switches the collaboration mode back, which gives the chat the mode it had before plan mode.
-    if (toolName === "ExitPlanMode" && this.settings.permissionMode === "plan") return { behavior: "deny", message: PLAN_PROPOSED };
+    if (toolName === "ExitPlanMode" && this.settings.plan) return { behavior: "deny", message: PLAN_PROPOSED };
     const turnId = this.turn?.id ?? "";
     const itemId = options.toolUseID ?? randomUUID();
     const base = { threadId: this.threadId, turnId, itemId, startedAtMs: Date.now() };

@@ -25,6 +25,8 @@ export interface MetaData {
   /** Default model, effort and speed the App picked while its default model is a Claude one, by config key (never
    *  written to Codex's config.toml). */
   claudeDefaults?: Record<string, unknown> | null;
+  /** Permission mode of Claude chats in plan mode: Claude runs them in its own plan mode and records only that. */
+  planPermissions?: Record<string, string>;
 }
 
 /**
@@ -40,7 +42,7 @@ export class Meta {
     const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Partial<MetaData> : {};
     this.data = {
       lineages: raw.lineages ?? {}, archived: raw.archived ?? [], sections: raw.sections ?? {},
-      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null,
+      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, planPermissions: raw.planPermissions ?? {},
     };
     this.reindex();
   }
@@ -126,9 +128,20 @@ export class Meta {
     this.save();
   }
 
+  public planPermission(threadId: string): string | undefined { return this.data.planPermissions![threadId]; }
+
+  /** A Claude chat's permission mode while it is in plan mode; null once it left plan mode. */
+  public setPlanPermission(threadId: string, mode: string | null): void {
+    if ((this.data.planPermissions![threadId] ?? null) === mode) return;
+    if (mode) this.data.planPermissions![threadId] = mode;
+    else delete this.data.planPermissions![threadId];
+    this.save();
+  }
+
   public forget(threadId: string): void {
     this.data.archived = this.data.archived.filter((id) => id !== threadId);
     delete this.data.sections[threadId];
+    delete this.data.planPermissions![threadId];
     this.save();
   }
 

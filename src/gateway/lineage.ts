@@ -573,7 +573,7 @@ export class Lineages {
     }
     // codex → claude: stock compaction is encrypted, so an ephemeral fork writes a summary with the same model.
     const cwd = (await this.thread(source)).cwd;
-    const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd, model: null, effort: null, fast: false, permissionMode: "default" }));
+    const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd, model: null, effort: null, fast: false, permissionMode: "default", plan: false }));
     // A backend from its first record on: its transcript is on disk before the lineage lists it.
     this.newBackends.add(session.threadId);
     for (const viewer of viewers) this.gateway.subscribe(session.threadId, viewer);
