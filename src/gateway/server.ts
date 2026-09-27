@@ -13,7 +13,7 @@ import { Connection } from "./connection.js";
 import { Lineages } from "./lineage.js";
 import { RemoteControl } from "./remote.js";
 import { acquireSocketStartupLock, prepareUnixSocket } from "./socket.js";
-import { isStatusCommand, statusCommand, statusSkill } from "./status.js";
+import { isStatusCommand, statusCommand, statusSkill, turnBeforeStatus } from "./status.js";
 import { StockClient, openStockSocket, startStockProcess, type StockProcess } from "./stock.js";
 import { Titles } from "./titles.js";
 
@@ -194,6 +194,9 @@ export class Gateway {
     if ((method === "turn/start" || method === "turn/steer") && isStatusCommand(params)) {
       return (conn, p) => statusCommand(this, conn, method, p);
     }
+    // A status turn exists only on the wire: a fork from it is a fork from the chat's newest real turn before it.
+    const lastTurnId = method === "thread/fork" ? turnBeforeStatus(params.lastTurnId) : undefined;
+    if (lastTurnId !== undefined) return (conn, p) => this.threadRequest(conn, method, { ...p, lastTurnId });
     if (method === "turn/start") {
       if (params.turnTrigger === "thread_title" && this.config.renamePrompt) {
         return (conn, p) => this.titles.answerDesktopTitleTurn(conn, p);
