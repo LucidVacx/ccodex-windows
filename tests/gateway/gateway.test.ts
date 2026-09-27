@@ -626,6 +626,47 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(history.thread.turns).toHaveLength(turns);
   });
 
+  it("takes Desktop's goal mode (a `/goal X` turn, then goal X set) as one goal that edits and pauses replace", async () => {
+    const threadId = await claudeThread();
+    const texts = () => fakeClaude.prompts.map((prompt) => prompt.text);
+    // Desktop's goal mode sends the goal's message as a turn, then sets the goal: Claude gets `/goal` once.
+    await client.request("turn/start", { threadId, input: text("/goal keep going\n") });
+    await client.request("thread/goal/set", { threadId, objective: "keep going", status: "active" });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(texts()).toEqual(["/goal keep going\n"]);
+    // An edit stops the goal's turn and Claude pursues the new goal.
+    await client.request("thread/goal/set", { threadId, objective: "met when stopped" });
+    await vi.waitFor(() => expect(texts().at(-1)).toBe("/goal met when stopped"), 2_000);
+    await client.waitFor("turn/started", (params) => params.threadId === threadId && texts().at(-1) === "/goal met when stopped");
+    // Met just as an edit stops it (Claude yet to take the new goal): the replaced goal's completion is no news
+    // (Desktop would clear the new goal for it).
+    let release!: () => void;
+    fakeClaude.goalHold = new Promise((resolve) => { release = resolve; });
+    const turnsDone = client.notifications("turn/completed", threadId).length;
+    await client.request("thread/goal/set", { threadId, objective: "keep going" });
+    await vi.waitFor(() => expect(client.notifications("turn/completed", threadId)).toHaveLength(turnsDone + 1), 2_000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    release();
+    await vi.waitFor(() => expect(texts().at(-1)).toBe("/goal keep going"), 2_000);
+    expect(client.notifications("thread/goal/updated", threadId).filter((message) => message.params.goal.status === "complete")).toEqual([]);
+    expect(client.notifications("thread/goal/cleared", threadId)).toEqual([]);
+    // Pausing stops the goal's turn too; resuming sets it again.
+    await client.request("thread/goal/set", { threadId, status: "paused" });
+    await vi.waitFor(() => expect(texts().at(-1)).toBe("/goal clear"), 2_000);
+    await client.request("thread/goal/set", { threadId, status: "active" });
+    await vi.waitFor(() => expect(texts().at(-1)).toBe("/goal keep going"), 2_000);
+    expect(texts()).toEqual(["/goal keep going\n", "/goal met when stopped", "/goal keep going", "/goal clear", "/goal keep going"]);
+    await client.request("thread/goal/clear", { threadId });
+    await vi.waitFor(() => expect(texts().at(-1)).toBe("/goal clear"), 2_000);
+    // Paused right after Desktop's goal mode set it.
+    await client.request("turn/start", { threadId, input: text("/goal keep going\n") });
+    await client.request("thread/goal/set", { threadId, objective: "keep going", status: "active" });
+    await vi.waitFor(async () => expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ status: "active" }), 2_000);
+    await client.request("thread/goal/set", { threadId, status: "paused" });
+    await vi.waitFor(() => expect(texts().slice(-3)).toEqual(["/goal clear", "/goal keep going\n", "/goal clear"]), 2_000);
+    expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "keep going", status: "paused" });
+  });
+
   it("keeps the latest name of a new Claude thread (a name set before its first message waits for it)", async () => {
     const threadId = await claudeThread();
     await client.request("thread/name/set", { threadId, name: "provisional" });

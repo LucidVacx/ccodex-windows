@@ -628,6 +628,8 @@ export class ClaudeThreads {
       if (name) await this.rename(threadId, name);
       const goal = this.goal(threadId);
       if (JSON.stringify(goal) === before) return;
+      // A goal replaced meanwhile (edited, paused, cleared) is no news: Desktop would clear the new goal for its completion.
+      if (goal && session.goalObjective !== undefined && goal.objective !== session.goalObjective) return;
       if (goal) this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId, goal });
       else this.gateway.emit(threadId, "thread/goal/cleared", { threadId });
     });

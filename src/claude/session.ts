@@ -12,7 +12,7 @@ import { startedTurn } from "../protocol/turnPagination.js";
 import {
   CODEX_MCP_TOOLS, codexMcpItem, tailCodexRollout, type CodexTurnContext,
 } from "./codexRollout.js";
-import { claudeContent, normalizeUserInput, userMessage } from "./inputMapper.js";
+import { claudeContent, inputText, normalizeUserInput, userMessage } from "./inputMapper.js";
 import { completedToolItem } from "./native/projector.js";
 import { ANSWER_CHARS, assistantBlockItemId, continuationTurnId } from "./native/ids.js";
 import { readTranscriptRecords, type UserRecord } from "./native/records.js";
@@ -200,6 +200,8 @@ export class ClaudeSession {
   private readonly plan = new Map<string, { step: string; status: string }>();
   /** Messages from other agents shown (peerKey), whichever of transcript and result told them first. */
   private readonly peerMessages = new Set<string>();
+  /** The goal last sent to Claude with `/goal` (null: cleared); undefined until this session sends one. */
+  public goalObjective: string | null | undefined;
   /** The running turn's result came: Claude answering again means it took another prompt by itself. */
   private afterResult = false;
   /** Proactive delegation (the `ultra` effort) as last told to Claude. */
@@ -381,6 +383,8 @@ export class ClaudeSession {
     const owner = this.turn ? undefined : foreignOwner(this.host.config.claudeHome, this.threadId);
     if (owner) throw invalidRequest(`This chat is open in another Claude process (pid ${owner}): close it there or wait until it ends.`);
     const input = normalizeUserInput(params.input ?? []);
+    const goal = /^\/goal\s+(\S[\s\S]*)/u.exec(inputText(input))?.[1]!.trim();
+    if (goal) this.goalObjective = goal === "clear" ? null : goal;
     const uuid: string = params.turnId ?? randomUUID();
     await this.applyTurnSettings(params);
     const content = await claudeContent(input, this.settings.cwd);
@@ -430,6 +434,10 @@ export class ClaudeSession {
    * goals themselves.
    */
   public async goal(args: string, active: boolean): Promise<void> {
+    // Desktop's goal mode sends the goal's message as a turn, then sets the goal: Claude has it already (a second
+    // `/goal` would wait behind that turn and set the old goal again once an edit or pause stops it).
+    if (args === this.goalObjective && this.turn) return;
+    this.goalObjective = args === "clear" ? null : args;
     if (active && this.turn) {
       const done = this.turnDone(this.turn.id);
       await this.interrupt();

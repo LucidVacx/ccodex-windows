@@ -13,7 +13,7 @@ export interface FakeClaudeLog {
   readonly calls: Array<{ method: string; args: unknown[] }>;
 }
 
-export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null; usageDown: boolean } = {
+export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; goalHold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null; usageDown: boolean } = {
   prompts: [],
   options: [],
   calls: [],
@@ -24,6 +24,8 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
   compactError: null,
   /** Set: an injection (no model reply) is confirmed only once it settles, its record already on disk. */
   hold: null,
+  /** Set: Claude takes a `/goal` (and records it) only once it settles. */
+  goalHold: null,
   /** How long a background command runs after Claude's answer. */
   backgroundMs: 500,
   /** Set: the models probe answers only once it settles. */
@@ -38,6 +40,7 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
     this.spawnError = null;
     this.compactError = null;
     this.hold = null;
+    this.goalHold = null;
     this.backgroundMs = 500;
     this.modelsHold = null;
     this.usageDown = false;
@@ -168,6 +171,7 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     return;
   }
   if (command?.[1] === "goal") {
+    await fakeClaude.goalHold;
     transcript.write({ type: "user", uuid, message: { role: "user", content: `<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>${command[2]}</command-args>` } });
     const output = command[2] === "clear" ? "Goal cleared" : `Goal set: ${command[2]}`;
     transcript.write({ type: "system", subtype: "local_command", content: `<local-command-stdout>${output}</local-command-stdout>`, commandRun: { command: "goal", args: command[2] } });
@@ -176,10 +180,13 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
       type: "assistant", message: { id: randomUUID(), role: "assistant", model: "<synthetic>", content: [{ type: "text", text: output }] },
       parent_tool_use_id: null, local_command_run: { command: "goal", args: command[2] },
     });
-    // Like Claude: it pursues a goal in the same turn until it is met (this one: until interrupted).
-    if (command[2] === "keep going") {
+    // Like Claude: it pursues a goal in the same turn until it is met (these: until interrupted; the second is met just
+    // as the stop comes).
+    const objective = command[2]!.trim();
+    if (objective === "keep going" || objective === "met when stopped") {
       await new Promise<void>((resolve) => { stopGoal = resolve; });
-      transcript.write({ type: "user", message: { role: "user", content: "[Request interrupted by user]" } });
+      transcript.write(objective === "keep going" ? { type: "user", message: { role: "user", content: "[Request interrupted by user]" } }
+        : { type: "attachment", attachment: { type: "goal_status", met: true, condition: objective } });
       yield* finish("", "error_during_execution");
       return;
     }

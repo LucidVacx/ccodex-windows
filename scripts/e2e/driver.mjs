@@ -550,6 +550,23 @@ const scenarios = {
     check(!said.some((line) => /^(?:Goal set: |Goal cleared|No goal set)/u.test(line)), "no goal notices in the chat", said.filter((line) => /goal/iu.test(line)));
     const liveCount = client.messages.filter((m) => m.method === "turn/started" && m.params.threadId === threadId).length;
     check(history.thread.turns.length === liveCount, "history has the live turns", { history: history.thread.turns.length, live: liveCount });
+    // Desktop's goal mode on a new chat sends the goal's message as a turn, then sets the goal; an edit then replaces it
+    // (before: a second `/goal` queued behind that turn set the old goal again, and its completion cleared the new one).
+    const { thread: fresh } = await client.request("thread/start", { model: state.haiku, cwd: WORK });
+    const onFresh = (method, predicate, since, ms = 240_000) => client.waitFor(method, (p) => p.threadId === fresh.id && predicate(p), ms, since);
+    from = client.messages.length;
+    await client.request("turn/start", { threadId: fresh.id, input: text(`/goal ${long("g")}\n`) });
+    await sleep(200);
+    await client.request("thread/goal/set", { threadId: fresh.id, objective: long("g"), status: "active" });
+    await onFresh("item/completed", (p) => p.item.type === "fileChange", from);
+    const editedAt = client.messages.length;
+    await client.request("thread/goal/set", { threadId: fresh.id, objective: `The file ${dir}/redo.txt exists and contains REDO.`, status: "active" });
+    const replaced = await onFresh("turn/completed", () => true, editedAt, 60_000);
+    check(replaced.turn.status === "interrupted", "an edit stops the goal-mode turn", replaced);
+    const redone = await onFresh("thread/goal/updated", (p) => p.goal.status === "complete", editedAt);
+    check(redone.goal.objective.includes("redo.txt"), "the edited goal is the one met after goal mode", redone);
+    check(existsSync(join(dir, "redo.txt")), "redo.txt written");
+    await client.request("thread/goal/clear", { threadId: fresh.id });
     return { turns: liveCount, files: readdirSync(dir).length };
   },
 

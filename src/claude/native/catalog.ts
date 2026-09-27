@@ -108,6 +108,7 @@ export class NativeSessionCatalog implements PeerDirectory {
   private ordered: readonly SessionSummary[] = [];
   private bySessionId = new Map<string, SessionSummary>();
   private refreshInFlight: Promise<void> | undefined;
+  private refreshQueued: Promise<void> | undefined;
   private readonly projections = new Map<string, Promise<TranscriptProjection>>();
   private readonly pagers = new Map<string, TranscriptPages>();
   private senders = new Map<string, string>();
@@ -121,7 +122,14 @@ export class NativeSessionCatalog implements PeerDirectory {
   }
 
   public refresh(_sessionId?: string): Promise<void> {
-    if (this.refreshInFlight) return this.refreshInFlight;
+    // A scan in flight may have begun before what the caller just wrote: one more follows it, for all who wait meanwhile.
+    if (this.refreshInFlight) {
+      this.refreshQueued ??= this.refreshInFlight.catch(() => undefined).then(() => {
+        this.refreshQueued = undefined;
+        return this.refresh();
+      });
+      return this.refreshQueued;
+    }
     const refresh = this.scan().finally(() => {
       if (this.refreshInFlight === refresh) this.refreshInFlight = undefined;
     });
