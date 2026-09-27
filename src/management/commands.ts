@@ -115,6 +115,14 @@ function writeShellBlock(path: string, bin: string): void {
  * `~/.local/bin/codex` → the managed shim: Desktop over SSH puts that directory first on PATH. A codex found there
  * (Codex's installer puts it there, also over our link) moves aside and stays CCodex's stock codex.
  */
+/** 0.4 moved an installer's relative `codex` link into the backup as is, where it dangles: it points again where it did. */
+function healDisplacedCodex(home: string): void {
+  const backupPath = displacedCodexPath(home);
+  if (existsSync(backupPath) || !lstatSync(backupPath, { throwIfNoEntry: false })?.isSymbolicLink()) return;
+  const target = resolve(dirname(remoteCodexPath()), readlinkSync(backupPath));
+  if (existsSync(target)) atomicSymlink(target, backupPath);
+}
+
 function installRemoteShim(home: string, bin: string): Manifest["remoteCodexShim"] {
   const path = remoteCodexPath();
   const target = join(bin, "codex");
@@ -182,6 +190,7 @@ export async function setup(args: readonly string[]): Promise<number> {
     });
   }
   keepClaudeTranscripts();
+  healDisplacedCodex(paths.home);
   // CCodex runs the Codex that is installed (like install.sh, it installs one when there is none).
   if (!findInstalledCodex(paths.home)) {
     process.stdout.write("No codex on PATH: installing @openai/codex\n");
