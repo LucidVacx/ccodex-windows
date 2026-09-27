@@ -1098,6 +1098,8 @@ export class ClaudeSession {
   private onResult(m: any): void {
     if (!this.turn) return;
     this.turn.resultSeen = true;
+    // Fast Claude can't serve (the account's usage credits, the model): Claude answers at standard speed, and the chat shows so.
+    if (this.settings.fast && m.fast_mode_state === "off") void this.updateSettings({ serviceTier: null });
     this.afterResult = true;
     // A turn a message from another agent started, unless showPeerMessage read it back already.
     const origin = peerOrigin(m.origin);

@@ -467,6 +467,14 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two", "user:four", "agent:claude: four"]);
   });
 
+  it("shows a Claude chat's Fast off once Claude answered at standard speed for it (no usage credits)", async () => {
+    fakeClaude.fastOff = true;
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one", { serviceTier: "fast" });
+    await vi.waitFor(() => expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings).toMatchObject({ serviceTier: null }));
+    expect(await client.request("thread/resume", { threadId })).toMatchObject({ serviceTier: null });
+  });
+
   it("runs a Claude chat with no effort chosen at the effort the picker shows for its model, not Claude's own default", async () => {
     const opus = (await client.request("model/list", {})).data.find((model: any) => model.id === CLAUDE);
     const threadId = await claudeThread();

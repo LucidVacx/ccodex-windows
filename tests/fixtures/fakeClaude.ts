@@ -13,7 +13,7 @@ export interface FakeClaudeLog {
   readonly calls: Array<{ method: string; args: unknown[] }>;
 }
 
-export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; goalHold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null; usageDown: boolean } = {
+export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; goalHold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null; usageDown: boolean; fastOff: boolean } = {
   prompts: [],
   options: [],
   calls: [],
@@ -32,6 +32,8 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
   modelsHold: null,
   /** Set: claude.ai's usage endpoint fails, Claude's `/usage` data has no windows. */
   usageDown: false,
+  /** Set: fast mode is off for the account (no usage credits). */
+  fastOff: false,
   reset() {
     this.prompts.length = 0;
     this.options.length = 0;
@@ -44,6 +46,7 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
     this.backgroundMs = 500;
     this.modelsHold = null;
     this.usageDown = false;
+    this.fastOff = false;
   },
 };
 
@@ -138,7 +141,9 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     // Like the CLI's after each API answer: no `utilization`, the plan windows in `unifiedWindows`.
     yield base(sessionId, { type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790539800, rateLimitType: "five_hour", isUsingOverage: false,
       unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1790539800 }, seven_day: { utilization: 0.06, resetsAt: 1791082800 } } } });
-    yield base(sessionId, { type: "result", subtype, is_error: false, result, total_cost_usd: 0.01, user_message_uuids: [uuid], modelUsage: { "claude-opus-5-5": { contextWindow: 200_000 } } });
+    // Like the CLI on an account without usage credits: fast asked for, answered at standard speed.
+    const fast = options.settings?.fastMode ? { fast_mode_state: fakeClaude.fastOff ? "off" : "on", ...(fakeClaude.fastOff ? { fast_mode_disabled_reason: "extra_usage_disabled" } : {}) } : {};
+    yield base(sessionId, { type: "result", subtype, is_error: false, result, total_cost_usd: 0.01, user_message_uuids: [uuid], modelUsage: { "claude-opus-5-5": { contextWindow: 200_000 } }, ...fast });
     yield base(sessionId, { type: "command_lifecycle", state: "completed", command_uuid: uuid });
     yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "idle" });
   };
@@ -474,6 +479,7 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
     setPermissionMode: (mode: string) => { options.permissionMode = settle(mode); return record("setPermissionMode")(mode); },
     applyFlagSettings: (settings: Message) => {
       if ("effortLevel" in settings) options.effort = settings.effortLevel ?? undefined;
+      if ("fastMode" in settings) options.settings = { ...options.settings, fastMode: settings.fastMode };
       return record("applyFlagSettings")(settings);
     },
     stopTask: record("stopTask"),
