@@ -44,7 +44,7 @@ describe("native Claude thread settings", () => {
     const summary = summarizeTranscript([
       record({
         type: "assistant", effort: "low",
-        message: { model: "claude-first", stop_reason: "end_turn", content: [], usage: { service_tier: "priority" } },
+        message: { model: "claude-first", stop_reason: "end_turn", content: [], usage: { service_tier: "standard", speed: "fast" } },
       }),
       record({
         type: "assistant", effort: "high",

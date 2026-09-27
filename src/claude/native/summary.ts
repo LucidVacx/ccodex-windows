@@ -109,7 +109,8 @@ const EMPTY_STATE: TranscriptSummaryState = {
 function serviceTier(record: TranscriptRecord): string | null {
   if (record.type !== "assistant" || record.message.stop_reason === null
     || record.message.stop_reason === undefined) return null;
-  return record.message.usage?.service_tier === "priority" ? "fast" : null;
+  // Claude records the speed it answered at (its `service_tier` is another thing).
+  return record.message.usage?.speed === "fast" ? "fast" : null;
 }
 
 type MutableSummaryState = { -readonly [Key in keyof TranscriptSummaryState]: TranscriptSummaryState[Key] };
