@@ -66,6 +66,8 @@ const sameTurns = (live, history) => {
 /** A Claude process runs for the chat (started for a new session or resumed). */
 const claudeRunning = (threadId) => spawnSync("pgrep", ["-f", `claude .*--(session-id|resume)=${threadId}`]).status === 0;
 const items = async (threadId) => (await client.request("thread/read", { threadId, includeTurns: true })).thread.turns.flatMap((turn) => turn.items);
+/** Claude wrote a file: with its Write tool or a shell command (models pick either). */
+const wrote = (item) => item.type === "fileChange" || (item.type === "commandExecution" && item.status === "completed");
 const answers = (client, threadId, since = 0) => client.messages.slice(since)
   .filter((m) => m.method === "item/completed" && m.params.threadId === threadId && m.params.item.type === "agentMessage")
   .map((m) => m.params.item.text);
@@ -513,7 +515,7 @@ const scenarios = {
     const long = (name) => `Files ${dir}/${name}1.txt through ${dir}/${name}40.txt exist, each containing its number. Create exactly ONE file per turn, then end the turn.`;
     from = client.messages.length;
     await client.request("thread/goal/set", { threadId, objective: long("n"), status: "active" });
-    await after("item/completed", (p) => p.item.type === "fileChange", from);
+    await after("item/completed", (p) => wrote(p.item), from);
     const pausedAt = client.messages.length;
     const paused = await client.request("thread/goal/set", { threadId, status: "paused" });
     check(paused.goal?.status === "paused" && paused.goal.objective === long("n"), "goal paused", paused);
@@ -526,7 +528,7 @@ const scenarios = {
     from = client.messages.length;
     const resumed = await client.request("thread/goal/set", { threadId, status: "active" });
     check(resumed.goal?.status === "active" && resumed.goal.objective === long("n"), "goal resumed", resumed);
-    await after("item/completed", (p) => p.item.type === "fileChange", from);
+    await after("item/completed", (p) => wrote(p.item), from);
     from = client.messages.length;
     await client.request("thread/goal/set", { threadId, objective: `The file ${dir}/done.txt exists and contains DONE.`, status: "active" });
     const stopped = await after("turn/completed", () => true, from, 60_000);
@@ -538,7 +540,7 @@ const scenarios = {
     // Clear while Claude pursues a goal: the turn stops, no turn follows, Claude's goal is gone.
     from = client.messages.length;
     await client.request("thread/goal/set", { threadId, objective: long("m"), status: "active" });
-    await after("item/completed", (p) => p.item.type === "fileChange", from);
+    await after("item/completed", (p) => wrote(p.item), from);
     const clearedAt = client.messages.length;
     check((await client.request("thread/goal/clear", { threadId })).cleared === true, "running goal cleared");
     const cut = await after("turn/completed", () => true, clearedAt, 60_000);
@@ -1112,7 +1114,7 @@ const scenarios = {
       chats.goalPaused = await start(state.haiku, full);
       await client.turn(chats.goalPaused, ok);
       const paused = await goalTurn(chats.goalPaused, long);
-      await client.waitFor("item/completed", (p) => p.threadId === chats.goalPaused && p.turnId === paused.turn.id && p.item.type === "fileChange", 120_000);
+      await client.waitFor("item/completed", (p) => p.threadId === chats.goalPaused && p.turnId === paused.turn.id && wrote(p.item), 120_000);
       await client.request("thread/goal/set", { threadId: chats.goalPaused, status: "paused" });
       chats.goalActive = await start(state.haiku, full);
       await client.turn(chats.goalActive, ok);
