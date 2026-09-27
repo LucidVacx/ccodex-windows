@@ -226,9 +226,13 @@ export class ClaudeSession {
     this.keepPlan();
   }
 
-  /** Claude's transcript records only its plan mode and the model it plans on: the chat's own wait in meta.json meanwhile. */
+  /** Claude's transcript records only its plan mode and the model it plans on: from plan mode on, the chat's own settings
+   *  wait in meta.json until a turn out of plan mode records them (turning plan mode off records nothing). */
   private keepPlan(): void {
-    this.host.gateway.meta.setPlan(this.threadId, this.settings.plan ? { permissionMode: this.settings.permissionMode, model: this.settings.model } : null);
+    const { meta } = this.host.gateway;
+    if (this.settings.plan || meta.plan(this.threadId)) {
+      meta.setPlan(this.threadId, { permissionMode: this.settings.permissionMode, model: this.settings.model, plan: this.settings.plan });
+    }
   }
 
   private resumeAt: string | undefined;
@@ -389,6 +393,8 @@ export class ClaudeSession {
     if (goal) this.goalObjective = goal === "clear" ? null : goal;
     const uuid: string = params.turnId ?? randomUUID();
     await this.applyTurnSettings(params);
+    // Its message records the chat's own mode in the transcript.
+    if (!this.settings.plan) this.host.gateway.meta.setPlan(this.threadId, null);
     const content = await claudeContent(input, this.settings.cwd);
     // Desktop shows `/goal` messages itself.
     const hidden = typeof content === "string" && /^\/(?:compact|goal)(?:\s|$)/u.test(content);

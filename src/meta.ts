@@ -13,6 +13,7 @@ export interface Segment {
 export interface Plan {
   readonly permissionMode: string;
   readonly model: string | null;
+  readonly plan: boolean;
 }
 
 export interface MetaData {
@@ -30,8 +31,8 @@ export interface MetaData {
   /** Default model, effort and speed the App picked while its default model is a Claude one, by config key (never
    *  written to Codex's config.toml). */
   claudeDefaults?: Record<string, unknown> | null;
-  /** Claude chats in plan mode: their permission mode and model (Claude records only its plan mode, and plans a Haiku
-   *  chat on Sonnet). */
+  /** Claude chats since plan mode, until a turn out of it: their permission mode, model and plan mode (Claude records
+   *  only its plan mode, and plans a Haiku chat on Sonnet). */
   plans?: Record<string, Plan>;
   /** Paused goals of Claude chats: Claude's `/goal` has no pause, so pausing clears it there and keeps it here. */
   pausedGoals?: Record<string, { objective: string; createdAt: number; updatedAt: number }>;
@@ -138,7 +139,7 @@ export class Meta {
 
   public plan(threadId: string): Plan | undefined { return this.data.plans![threadId]; }
 
-  /** A Claude chat's permission mode and model while it is in plan mode; null once it left plan mode. */
+  /** A Claude chat's settings from plan mode on; null once a turn out of plan mode records its own in the transcript. */
   public setPlan(threadId: string, plan: Plan | null): void {
     if (JSON.stringify(this.data.plans![threadId] ?? null) === JSON.stringify(plan)) return;
     if (plan) this.data.plans![threadId] = plan;

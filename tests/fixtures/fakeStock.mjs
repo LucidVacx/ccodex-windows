@@ -16,8 +16,8 @@ const materialized = new Set();
 let clock = 1_790_000_000;
 
 const now = () => ++clock;
-const summary = (thread) => ({ ...thread, turns: [], injected: undefined });
-const full = (thread) => ({ ...thread, injected: undefined });
+const summary = (thread) => ({ ...thread, turns: [], injected: undefined, approvalPolicy: undefined, sandbox: undefined });
+const full = (thread) => ({ ...summary(thread), turns: thread.turns });
 
 function newThread(params, extra = {}) {
   const at = now();
@@ -26,7 +26,7 @@ function newThread(params, extra = {}) {
     modelProvider: "openai", model: params.model ?? "gpt-6-luna", reasoningEffort: null, createdAt: at, updatedAt: at,
     recencyAt: at, status: { type: "idle" }, path: null, cwd: params.cwd ?? "/work", cliVersion: "0.156.0", source: "vscode",
     threadSource: "user", agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [], archived: false,
-    injected: [], ...extra,
+    injected: [], approvalPolicy: "on-request", sandbox: { type: "workspaceWrite" }, ...extra,
   };
   thread.sessionId = thread.id;
   thread.path = `/sessions/rollout-${thread.id}.jsonl`;
@@ -37,8 +37,8 @@ function newThread(params, extra = {}) {
 function settings(thread) {
   return {
     model: thread.model, modelProvider: "openai", serviceTier: null, disabledPluginIds: [], cwd: thread.cwd,
-    runtimeWorkspaceRoots: [thread.cwd], instructionSources: [], approvalPolicy: "on-request", approvalsReviewer: "user",
-    sandbox: { type: "workspaceWrite" }, activePermissionProfile: null, reasoningEffort: null, multiAgentMode: "explicitRequestOnly",
+    runtimeWorkspaceRoots: [thread.cwd], instructionSources: [], approvalPolicy: thread.approvalPolicy, approvalsReviewer: "user",
+    sandbox: thread.sandbox, activePermissionProfile: null, reasoningEffort: null, multiAgentMode: "explicitRequestOnly",
   };
 }
 
@@ -192,6 +192,9 @@ const handlers = {
     if (!thread) throw Object.assign(new Error(`thread not found: ${params.threadId}`), { code: -32600 });
     if (!thread.subscribers.has(connection)) throw Object.assign(new Error(`thread not loaded: ${params.threadId}`), { code: -32600 });
     if (params.model) thread.model = params.model;
+    // Like stock: a turn's permission fields stay the thread's until others come.
+    if (params.approvalPolicy) thread.approvalPolicy = params.approvalPolicy;
+    if (params.permissions) thread.sandbox = { type: params.permissions === ":danger-full-access" ? "dangerFullAccess" : "workspaceWrite" };
     return runTurn(connection, thread, params);
   },
   // Its turns end at once: a queued message starts when stock would drain it, after the running turn.

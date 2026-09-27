@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { codexPermissions } from "../claude/sdk.js";
+import { codexPermissions, permissionSettings } from "../claude/sdk.js";
 import type { ClaudeSession } from "../claude/session.js";
 import type { Provider, Segment } from "../meta.js";
 import { invalidRequest, requestedModel, type JsonObject, type Thread, type Turn } from "../protocol/codex.js";
@@ -600,12 +600,14 @@ export class Lineages {
       }
     }
     // codex → claude: stock compaction is encrypted, so an ephemeral fork writes a summary with the same model.
-    const cwd = (await this.thread(source)).cwd;
+    // The chat's own permissions carry over: Desktop sends none in plan mode, stock's resume tells them.
+    const stock: JsonObject = await connection.upstream.request("thread/resume", { threadId: source.threadId, excludeTurns: true });
+    const permissions = permissionSettings({ approvalPolicy: stock.approvalPolicy, approvalsReviewer: stock.approvalsReviewer, sandboxPolicy: stock.sandbox }, { permissionMode: "default", plan: false });
     const found: JsonObject = await connection.upstream.request("thread/goal/get", { threadId: source.threadId });
     const goal = found.goal?.status === "complete" ? null : found.goal;
     // The goal goes on with the chat's next backend: stock pursues it no more.
     if (goal) await connection.upstream.request("thread/goal/clear", { threadId: source.threadId });
-    const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd, model: null, effort: null, fast: false, permissionMode: "default", plan: false }));
+    const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd: stock.cwd, model: null, effort: null, fast: false, ...permissions }));
     // A backend from its first record on: its transcript is on disk before the lineage lists it.
     this.newBackends.add(session.threadId);
     for (const viewer of viewers) this.gateway.subscribe(session.threadId, viewer);

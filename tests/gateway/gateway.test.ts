@@ -328,7 +328,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     // Plan mode shows the chat's own permissions, like stock's.
     expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings).toMatchObject({ approvalPolicy: "never", collaborationMode: { mode: "plan" } });
     const meta = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8"));
-    expect(meta.plans).toEqual({ [threadId]: { permissionMode: "bypassPermissions", model: "claude-opus-5-5" } });
+    expect(meta.plans).toEqual({ [threadId]: { permissionMode: "bypassPermissions", model: "claude-opus-5-5", plan: true } });
     await gateway.stop();
     gateway = await startTestGateway({}, meta);
     client = await gateway.connect();
@@ -354,6 +354,23 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(await client.request("thread/resume", { threadId: thread.id })).toMatchObject({ model: haiku });
     await client.turn(thread.id, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag", { collaborationMode: mode("default") });
     expect(fakeClaude.options.at(-1)!.model).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("keeps a Claude chat's Full access and model when its plan message is edited after plan mode was turned off (its transcript still ends in plan)", async () => {
+    const haiku = "claude:claude-haiku-4-5-20251001";
+    const mode = (name: string) => ({ mode: name, settings: { model: haiku, reasoning_effort: null, developer_instructions: null } });
+    const asked: any[] = [];
+    client.onRequest = (message) => { asked.push(message); return { decision: "accept" }; };
+    const { thread } = await client.request("thread/start", { model: haiku, cwd: "/work" });
+    await client.turn(thread.id, "one", { approvalPolicy: "never", permissions: ":danger-full-access", collaborationMode: mode("default") });
+    await client.turn(thread.id, "two", { collaborationMode: mode("default") });
+    const { turn: planned } = await client.turn(thread.id, "propose a plan: 1. add the flag", { collaborationMode: mode("plan") });
+    // The user skips "Implement this plan?" and turns the Plan chip off, then edits the plan message.
+    await client.request("thread/settings/update", { threadId: thread.id, collaborationMode: mode("default") });
+    await client.request("thread/revert", { threadId: thread.id, beforeTurnId: planned.id });
+    await client.turn(thread.id, "touch c4edit.txt; this needs approval", { turnTrigger: "edit_user_message" });
+    expect(fakeClaude.options.at(-1)).toMatchObject({ permissionMode: "bypassPermissions", model: "claude-haiku-4-5-20251001" });
+    expect(asked).toEqual([]);
   });
 
   it("puts Claude's question to the user in the client's own question UI, even with full access", async () => {
@@ -1345,6 +1362,19 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(meta.lineages[threadId]).toBeUndefined();
     const after = await client.request("thread/read", { threadId, includeTurns: true });
     expect(itemsOf(after.thread.turns)).toEqual(["user:first", "agent:gpt: first"]);
+  });
+
+  it("switches gpt → claude in plan mode with the chat's own permissions (Desktop sends none in plan mode)", async () => {
+    const threadId = await stockThread();
+    await client.turn(threadId, "first", { approvalPolicy: "never", permissions: ":danger-full-access" });
+    const plan = { mode: "plan", settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } };
+    await client.request("thread/settings/update", { threadId, model: CLAUDE, collaborationMode: plan });
+    const { turn } = await client.request("turn/start", { threadId, input: text("propose a plan: 1. add the flag"), collaborationMode: plan });
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && params.turn.id === turn.id);
+    expect(fakeClaude.options.at(-1)!.permissionMode).toBe("plan");
+    expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings).toMatchObject({ approvalPolicy: "never", collaborationMode: { mode: "plan" } });
+    const meta = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8"));
+    expect(meta.plans[meta.lineages[threadId].at(-1).threadId].permissionMode).toBe("bypassPermissions");
   });
 });
 

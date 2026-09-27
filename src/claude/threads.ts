@@ -58,7 +58,8 @@ const MAX_PROCESSES = Number(process.env.CCODEX_E2E_MAX_PROCESSES) || 10;
 /** A chat's permissions and plan mode from the mode its transcript last recorded (in plan mode, meta.json keeps its own). */
 function recordedPermissions(threadId: string, recorded: string | null | undefined, meta: Meta): Pick<SessionSettings, "permissionMode" | "plan"> {
   if (recorded !== "plan") return { permissionMode: (recorded ?? "default") as PermissionMode, plan: false };
-  return { permissionMode: (meta.plan(threadId)?.permissionMode ?? "default") as PermissionMode, plan: true };
+  const kept = meta.plan(threadId);
+  return { permissionMode: (kept?.permissionMode ?? "default") as PermissionMode, plan: kept?.plan ?? true };
 }
 
 /** A chat's effort from its transcript: Claude records `ultra` as the max it runs at, told to delegate. */
