@@ -4,8 +4,8 @@
 
 **Claude models inside the official Codex App.**
 
-*Claude Code'x — or just **CCodex** — is a compatibility bridge that teaches the
-Codex desktop and mobile apps to run Claude models.*
+*Claude Code'x — or just **CCodex** — lets the Codex desktop app, the ChatGPT mobile app
+and the Codex CLI run Claude models next to GPT.*
 
 </div>
 
@@ -26,213 +26,199 @@ curl -fsSL https://github.com/gkorepanov/ccodex/releases/latest/download/install
 
 ---
 
-## Why
+Want Fable and Opus writing your code, but prefer the Codex App and its remote sessions
+from desktop and phone? CCodex puts the **native Claude Code harness** (official Claude
+Agent SDK, your own Claude login) behind that UI. GPT chats still go to your installed
+Codex unchanged. No CCodex servers, no telemetry; MIT-licensed.
 
-Want Fable and Opus writing your code, but can't stand the Claude Code app? Same.
-The Codex App is everything it isn't: a genuinely great agentic UI with remote
-sessions from desktop and mobile that just *work*, from anywhere. CCodex is the
-missing bridge.
+> [!WARNING]
+> CCodex is young. Expect bugs — and please [report them](https://github.com/gkorepanov/ccodex/issues).
 
 ## What you get
 
-- 🤖 **Claude models in the official Codex App** — `claude:*` models appear right in
-  the stock model picker, next to `gpt-*`.
-- 📱 **Rock-solid remote sessions** — drive Claude tasks from the Codex App and the
-  official ChatGPT mobile app over SSH, exactly the way you already use OpenAI models.
-- 🔀 **Seamless provider switching** — jump between OpenAI and Claude mid-project with
-  a compact context handoff, so your chat doesn't start from zero.
-- ⚡ **Native-feeling Codex features** — threads, turns, tools, approvals, `/compact`,
-  Fork, effort and fast-mode settings all work with Claude models like they were built in.
-- 🧩 **Claude skills in `$` autocomplete** — project and user skills appear beside Codex
-  skills and invoke Claude's native slash commands.
-- 📊 **Status command** — `/cc` (also `/ccstatus`, `/ccodex`, `/ccstate`, with or without
-  the slash, or *CCodex status* in the App's `/` menu) shows the chat's model, settings,
-  context and session next to ❋ Claude and ֎ Codex quotas. Sent while a turn runs, it
-  answers at once without reaching the model.
-- ✨ **Bonus: better thread titles** — threads in the Codex App get auto-named in a
-  fun, readable way with an emoji prefix, so you can tell them apart at a glance.
-  Want your own naming style? Drop any custom prompt into `~/.ccodex/config.toml`.
-
-### Not a hack
-
-CCodex is **not** a Codex harness bolted onto a reverse-engineered Anthropic
-subscription. It is the **native Claude Code harness** (official Claude Agent SDK +
-Claude Code runtime), surfaced through the excellent Codex App UI. You log in to each
-provider with its own official CLI, and no Anthropic or OpenAI terms are violated.
-
-### 100% local, 100% open source
-
-CCodex sends **nothing anywhere**. There are no CCodex servers, no telemetry, no
-proxies of ours in the middle — traffic goes over the exact same infrastructure the
-stock Claude CLI and Codex CLI already use, straight to the providers. Everything else
-lives on your machine, and the entire codebase is MIT-licensed and open.
-
-## Project status
-
-> [!WARNING]
-> CCodex is very early and not extensively tested yet. Expect bugs — and please
-> [report them](https://github.com/gkorepanov/ccodex/issues).
+- **Claude models in the model picker**, next to `gpt-*` (ids `claude:…`), with Claude's
+  effort levels and Fast mode. Codex's `ultra` effort runs Claude at `max` and has it
+  delegate to sub-agents proactively, as stock does for GPT.
+- **Switch providers mid-chat.** Pick a GPT model in a Claude chat (or the other way
+  round) and the conversation is compacted into a summary that the other provider
+  continues from. The App keeps showing one chat with one history; edits and forks across
+  the switch work.
+- **Codex App features on Claude chats**: approvals, Plan mode, `/goal`, `/compact`, fork,
+  message edits, steering and queued messages, Stop, side chats (`/side`, served by
+  Claude's `/btw`), images, Claude's questions as the App's question prompts, its task
+  list as the turn's to-do list, and thinking as reasoning summaries.
+- **Sub-agents and background commands like stock's**: Claude sub-agents open as their
+  own threads, background shell commands show as background terminals, and messages
+  between Claude chats show as the App's messages between tasks.
+- **Claude skills in the `$` picker**, beside Codex skills, in Claude and GPT chats.
+- **Search**: the sidebar search and find-in-chat cover Claude chats too.
+- **Phone**: turn on remote control in the Codex App (or
+  `codex app-server daemon enable-remote-control` on the host) and pair the ChatGPT
+  mobile app as usual; it drives Claude chats like GPT ones.
+- **Your `claude` CLI sessions show up** in the App, and chats from the App resume in
+  `claude --resume <id>` (a Claude chat's id is its Claude session id). While another live
+  Claude process has a chat open, the App can't start a turn in it.
+- **Claude can delegate to Codex** through the `codex-wrapper` agent that setup installs;
+  what Codex does streams into the Claude chat.
+- **`/cc` status card** (also `/ccstatus`, `/ccodex`, `/ccstate`, with or without the
+  slash, or *CCodex status* in the `/` menu): the chat's model, effort, permission mode,
+  context use, session state, and Claude and Codex plan limits. Sent while a turn runs,
+  it answers at once and never reaches the model.
+- **Emoji thread titles** from a small GPT model and an editable prompt; Claude chats get
+  a ` ✳️` suffix.
 
 ## Install
 
-The one-liner above is all you need (it installs the Codex CLI too if it is missing).
-Prefer npm?
+### Requirements
+
+| | |
+|---|---|
+| **OS** | macOS 11+ on Apple silicon · Linux x64 or arm64 with glibc ≥ 2.31 (no Alpine/musl) · Bash, Zsh or Fish |
+| **Node.js** | `>=22.13 <27` (22 or 24 LTS recommended), npm `>=10` |
+| **Codex CLI** | any recent version; installed for you if missing. Tested with `0.156` and `0.157` |
+| **Claude Code** | nothing to install: the Agent SDK brings it (`0.3.280` / Claude Code `2.1.280`) |
+
+Don't run the installer or setup as root or with `sudo`.
+
+### 1. Install
+
+Either the script (it checks the platform, installs `@openai/codex` if there is no
+`codex`, then runs `ccodex setup`):
 
 ```sh
-npm install -g @openai/codex     # CCodex runs the Codex you have installed, any version
+curl -fsSL https://github.com/gkorepanov/ccodex/releases/latest/download/install.sh | sh
+```
+
+or npm:
+
+```sh
 npm install -g @gkorepanov/ccodex
 ccodex setup
 ```
 
-In a terminal, setup offers to append two sections to your global `~/.claude/CLAUDE.md`
-(Formulas, Plots): the App renders LaTeX only as `\(...\)` / `\[...\]` and shows plots
-inline only as `![name](/abs/path.png)`; without them Claude's formulas and plots look
-subpar there. They live in [`claude/chat-formatting.md`](claude/chat-formatting.md).
+### 2. Log in
 
-Provider login is optional at install time — add or repair it whenever:
+Skip what you are already logged in to; rerun any time:
 
 ```sh
-ccodex auth codex
-ccodex auth claude
-ccodex setup
+ccodex auth codex     # codex login
+ccodex auth claude    # Claude Code login (the SDK's bundled claude)
 ```
 
-Keeping it healthy, updated, or removing it:
+### 3. Activate
 
-```sh
-ccodex doctor            # (or --json)
-ccodex update            # npm latest; --check / --next available
-ccodex uninstall         # preserves config and state; add --purge --yes to wipe
-```
-
-The release asset also ships a matching `uninstall.sh` that works even if your shell
-`PATH` no longer resolves `ccodex`.
-
-## How it works
-
-CCodex is a thin layer in front of the `codex app-server` you already have installed:
-
-- **gpt threads are stock, byte for byte.** One stock `codex app-server` serves every App
-  connection (each over a connection of its own); CCodex forwards its traffic unchanged.
-  No pinned Codex: update Codex whenever you like.
-- **Claude threads are Claude Code sessions.** `claude:*` models run on the official
-  Claude Agent SDK, and `~/.claude/projects` is the only source of truth: every session
-  (including ones made in the `claude` CLI) is listed at once. Claude's own `/goal`,
-  compaction, sub-agents, skills, and background tasks show up as native Codex items.
-  Like stock's threads, a Claude chat nobody has open is unloaded after 30 idle minutes,
-  unless a command it runs still works (a background command idle for 30 minutes counts
-  as hung and is ended).
-- **Provider switch = compaction.** Switching model provider mid-thread compacts the
-  conversation with the Codex prompt, then continues in a new native thread of the other
-  provider seeded with the summary; the App keeps showing one thread with one history.
-  Forks and rollbacks across the switch land in the right segment.
-- Codex approval modes map onto Claude permissions: *Full Access* →
-  `bypassPermissions`, *Ask for approval* → `default`, *Approve for me* → `auto`.
-  Claude effort and fast mode map from Codex reasoning / priority settings; Codex's
-  `ultra` runs Claude at `max` and turns on proactive sub-agent delegation, as stock does.
-- The only state CCodex keeps is a tiny optional `~/.ccodex/state/meta.json`
-  (provider-switch lineages, archive flags and sections of Claude threads).
-- Plain `codex …` commands (TUI, `exec`, login) go straight to your installed Codex.
-  `codex mcp-server` (removed from Codex in 0.154) is served by CCodex on top of
-  `codex exec`, and Claude threads stream what those Codex sessions do.
-
-Setup activates a new version atomically and never restarts a running gateway: the new
-version takes over after `codex app-server daemon restart`.
-
-### Upgrading from 0.4
-
-0.5 drops the 0.4 databases. `ccodex setup` (also when 0.4's setup hands over to 0.5)
-carries provider-switch history, archive flags, sections and names over once, before it
-activates 0.5; a failed migration activates nothing. Claude chats get their Claude session
-ids (links to 0.4 thread ids stop working); 0.4's `/btw` side chats are archived. Claude
-chats whose transcripts Claude's 30-day cleanup deleted come back from 0.4's turns as text.
-The 0.4 databases move to `~/.ccodex.0.4-backup`. Then:
+Open a new shell, then restart the gateway:
 
 ```sh
 codex app-server daemon restart
 ```
 
-### Local Codex App (same-Mac)
+- **Codex App over SSH:** reconnect to the host. The App finds CCodex's `codex` first on
+  `PATH` (and at `~/.local/bin/codex`).
+- **Local Codex App on macOS:** fully quit the App (`Cmd+Q`) and open it again (or log
+  out and back in).
+- **Local Codex App on Linux:** setup doesn't configure it; start the App with
+  `CODEX_CLI_PATH=~/.ccodex/bin/codex` in its environment.
 
-Over SSH the App resolves `codex` through your `PATH`, so the shim engages. The **local
-Codex App**, however, launches its bundled `codex app-server` directly and ignores
-`PATH`, so ccodex never sees it and no `claude:*` models appear. On macOS `ccodex setup`
-closes that gap without ever touching the signed `.app` bundle (so Sparkle auto-updates
-keep working):
+### What setup changes
 
-- `ccodex setup` points the App at ccodex automatically via
-  `CODEX_CLI_PATH=~/.ccodex/bin/codex` — it runs `launchctl setenv` for the live
-  session, installs a one-shot login LaunchAgent (`dev.ccodex.codex-cli-path`) so the GUI
-  session re-publishes it on every login/reboot, and exports it in the managed shell
-  blocks for terminal-launched instances. The same managed `codex` entrypoint is used
-  locally and over SSH. **Fully quit the Codex App (`Cmd+Q`) and relaunch it**
-  (or log out and back in) so it picks up the variable.
-- A bare `app-server` launch runs a thin **stdio frontend**: it forwards the App's
-  newline-delimited JSON to the existing app-server-control socket, lazily starts the
-  gateway when cold, and reconnects after gateway restarts. Provider state and lifecycle
-  remain exclusively inside the existing gateway.
-- A gateway started otherwise (from a terminal, or for an earlier App launch) is replaced
-  at once by one the frontend starts: the App lets only processes under it use its
-  browser (Browser Use), and that gateway runs with the App's environment. Chats running
-  in the old gateway stop, as the App's own chats stop when it quits.
-- There is **no extra macOS gateway service**. The same PID-managed gateway used over SSH
-  starts lazily when the App connects and stops through the existing daemon contract.
-  Setup/update/rollback only switch files and ask you to reconnect; they never restart a
-  live gateway underneath a task.
-- `ccodex uninstall` removes the login hook, restores any previous `CODEX_CLI_PATH`,
-  strips the managed shell export, and stops only CCodex's own PID-managed gateway.
+- Installs the version under `~/.ccodex/versions/` and the `codex` / `ccodex` shims in
+  `~/.ccodex/bin`, which a managed block (`# >>> ccodex >>>`) puts first on `PATH` in your
+  Bash, Zsh and Fish startup files.
+- Links `~/.local/bin/codex` to the shim; a `codex` found there moves to
+  `~/.ccodex/backups/remote-codex` and stays the Codex CCodex runs.
+- macOS: sets `CODEX_CLI_PATH` for the local App (`launchctl setenv` plus a login
+  LaunchAgent `dev.ccodex.codex-cli-path`), so the App starts CCodex instead of its bundled
+  `codex`. The signed `.app` is never touched, so its auto-updates keep working.
+- Claude Code: sets `cleanupPeriodDays: 36500` in `~/.claude/settings.json` when unset
+  (Claude deletes transcripts older than 30 days by default, and with them your Claude
+  chats), and installs the `codex-wrapper` agent, the `workforce` skill and the `codex` MCP
+  server (user scope).
+- In a terminal, offers to append the Formulas and Plots sections of
+  [`claude/chat-formatting.md`](claude/chat-formatting.md) to `~/.claude/CLAUDE.md`, so
+  Claude writes LaTeX and plots the way the App renders them.
+- Never restarts a running gateway: a new version takes over after
+  `codex app-server daemon restart`.
 
-## Technical details
+## Update, upgrade from 0.4, uninstall
 
-| | |
-|---|---|
-| **CCodex** | `0.5.0` |
-| **Codex CLI** | whatever is installed (`npm i -g @openai/codex`); tested with `0.156` |
-| **Claude Agent SDK / Claude Code** | `0.3.280` / `2.1.280` |
-| **Runtime** | Node.js `>=22.13 <27`, npm `>=10` |
-| **Platforms** | macOS 11+ (arm64) · Linux arm64 & x64, glibc ≥2.31 (Ubuntu 22.04+, Debian 11+, Fedora/RHEL equivalents). Alpine/musl not supported |
-| **Shells** | Bash, Zsh, Fish |
-| **Relay** | Prebuilt per-platform `@gkorepanov/ccodex-relay-*` optional packages — installs never compile Rust or native addons |
-
-Fresh setup writes the editable title prompt to `~/.ccodex/config.toml`:
-
-```toml
-rename_prompt = """
-Create a concise, vivid, memorable title for the task.
-Start with exactly one rare, expressive, context-relevant emoji followed by one space.
-Avoid generic decorative emoji when a more specific symbol fits.
-Keep the complete title, including emoji, within 36 characters.
-Return only the title.
-"""
-
-# title_model = "gpt-6-luna"   # default: a small visible Codex model
+```sh
+ccodex update             # to npm latest; --check only reports, --next takes the pre-release
+ccodex doctor             # health check (--json available)
+ccodex uninstall          # keeps ~/.ccodex/config.toml and ~/.ccodex/state
+ccodex uninstall --purge --yes   # also deletes ~/.ccodex
 ```
 
-Remove or comment out `rename_prompt` for stock Codex title generation. With it, new
-threads are titled by the title model (Claude threads get a ` ✳️` suffix); manual names
-take priority. Setup never restores a prompt removed from an existing config. Other
-optional keys are listed in [`examples/config.toml`](examples/config.toml).
+Uninstall stops CCodex's gateway and undoes the `PATH`, `~/.local/bin/codex` and
+`CODEX_CLI_PATH` changes; what setup added to `~/.claude` stays. If `ccodex` is gone from
+`PATH`, use the release's `uninstall.sh` (`… | sh -s -- --purge` to purge):
+`curl -fsSL https://github.com/gkorepanov/ccodex/releases/latest/download/uninstall.sh | sh`
 
-For bug reports, `rpc_capture = true` records every App RPC frame under `~/.ccodex/state`
-(`rpc.jsonl`, mode `0600`, rolls at a combined 1 GiB), prompts and outputs included — it is
-off by default and never leaves your disk.
+**From 0.4:** run `ccodex update` (or reinstall), then `codex app-server daemon restart`.
+0.5 keeps no databases of its own; setup migrates 0.4's state once before it activates
+0.5 (a failed migration activates nothing). Provider-switch history, archive flags,
+sections and names carry over. Claude chats get their Claude session ids (links to 0.4
+thread ids stop working), 0.4's side chats are archived, and chats whose transcripts
+Claude's 30-day cleanup deleted come back as text. The 0.4 databases move to
+`~/.ccodex.0.4-backup`.
 
-Client quirk worth knowing: the built-in `/status` differs by client (Mobile consumes
-provider-labelled quota events; Desktop may render its own OpenAI-account view).
-`/cc` is the client-independent source of truth.
+## Settings
+
+Claude chats follow the App's own controls:
+
+| Codex App | Claude Code |
+|---|---|
+| *Full Access* / *Ask for approval* / *Approve for me* | permission mode `bypassPermissions` / `default` / `auto` |
+| Plan mode | permission mode `plan` |
+| Reasoning effort | effort (`ultra` = `max` + proactive sub-agents) |
+| Fast | Claude fast mode |
+
+`~/.ccodex/config.toml` (every key optional; all of them are in
+[`examples/config.toml`](examples/config.toml)):
+
+- `rename_prompt` — the title prompt; remove it for stock Codex titles (manual names
+  always win). `title_model` — the model that writes them.
+- `log_level` — `debug`, `info` (default), `warn`, `error`.
+- `codex_binary`, `delegate_codex`, `claude_binary` — use a specific `codex` or `claude`.
+
+## Troubleshooting
+
+- `ccodex doctor` checks Node, Codex and Claude and their logins, the prebuilt native
+  relay (`@gkorepanov/ccodex-relay-*`), the gateway and the install, and says what to run.
+- `codex app-server daemon restart` restarts the gateway (chats running in it stop).
+- The gateway's log is `~/.codex/app-server-daemon/app-server.stderr.log`, rewritten at
+  each gateway start; set `log_level = "debug"` for more.
+- For a bug report, `rpc_capture = true` records every App message to
+  `~/.ccodex/state/rpc.jsonl` (mode `0600`, capped at 1 GiB, prompts and outputs
+  included). Off by default; it never leaves your disk.
+- The App's built-in `/status` differs by client (Desktop may show only its OpenAI account);
+  `/cc` shows the same in every client.
+- On a Mac, the local App replaces a gateway started from a terminal (or by an earlier App
+  launch) with its own, so that Browser Use works; chats running in the old one stop.
+
+## How it works
+
+CCodex is a thin gateway in front of your installed `codex app-server`: the App starts
+CCodex's `codex`, one stock app-server serves every GPT chat unchanged, and `claude:*`
+chats run on the Claude Agent SDK with Claude's transcripts in `~/.claude/projects` as
+their only source of truth. The only state CCodex adds is an optional
+`~/.ccodex/state/meta.json` (provider-switch history, archive flags and sections of Claude
+chats). Plain `codex …` commands (TUI, `exec`, `login`) run your installed Codex; `codex
+mcp-server`, removed from Codex in `0.154`, is served by CCodex on top of `codex exec`.
 
 ## Development
 
 ```sh
 npm ci --ignore-scripts
 npm run check
-npm test                  # black-box gateway tests + schema check against the installed codex
-scripts/e2e/run.sh        # podman, real models, copies of your credentials (never your live state)
+npm test                  # unit and black-box gateway tests, relay tests
+scripts/e2e/run.sh        # rootless podman, real models, copies of your credentials
 ```
 
-Release workflows build and execute all three native relay packages, publish platform
-packages before the main package, generate checksums / SBOM / notices, and use npm
-trusted publishing with provenance.
+## License
+
+MIT — see [`LICENSE`](LICENSE). Third-party licenses and notices:
+[`legal/LICENSES.md`](legal/LICENSES.md), [`legal/THIRD_PARTY_NOTICES.md`](legal/THIRD_PARTY_NOTICES.md).
 
 <div align="center">
 <sub>Claude Code'x is an independent open-source project — not affiliated with, sponsored, or endorsed by OpenAI or Anthropic.</sub>
