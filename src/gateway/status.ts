@@ -113,7 +113,7 @@ async function statusText(gateway: Gateway, connection: Connection, threadId: st
   }
   if (segments) session.push(segments.map((segment) => segment.provider === "claude" ? "Claude" : "GPT").join(" → "));
   rows.push(...claudeError ? [`| **Claude** | 🔴 ${claudeError} |`]
-    : claudeLimits.primary || claudeLimits.secondary ? limitRows("Claude", claudeLimits) : ["| **Claude** | limits appear after the first Claude turn |"]);
+    : claudeLimits.primary || claudeLimits.secondary ? limitRows("Claude", claudeLimits) : [`| **Claude** | 🔴 ${gateway.claude.usageError ?? "limits unavailable"} |`]);
   rows.push(...codexLimits.error ? [`| **Codex** | 🔴 ${codexLimits.error} |`] : limitRows("Codex", codexLimits));
   const home = homedir();
   return [

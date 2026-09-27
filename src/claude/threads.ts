@@ -69,6 +69,9 @@ export class ClaudeThreads {
   private models_?: Promise<JsonObject[]>;
   private defaultModel: string | null = null;
   private readonly rateLimitWindows = new Map<string, RateLimitWindow & { status: string }>();
+  private usage?: { at: number; done: Promise<void> };
+  /** Why Claude's plan limits could not be read, when they could not. */
+  public usageError?: string;
   private stopWatching?: () => void;
   public onTurnCompleted?: (threadId: string, turnId: string) => void;
 
@@ -616,9 +619,11 @@ export class ClaudeThreads {
 
   public onRateLimit(info: JsonObject | undefined): void {
     if (!info?.rateLimitType) return;
+    // A turn's event often carries no utilization: the last known one stays.
+    const known = this.rateLimitWindows.get(info.rateLimitType)?.usedPercent ?? 0;
     this.rateLimitWindows.set(info.rateLimitType, {
       status: info.status,
-      usedPercent: Math.round(Number(info.utilization ?? (info.status === "rejected" ? 1 : 0)) * 100),
+      usedPercent: typeof info.utilization === "number" ? Math.round(info.utilization * 100) : info.status === "rejected" ? 100 : known,
       windowDurationMins: WINDOW_MINUTES[info.rateLimitType] ?? null,
       resetsAt: typeof info.resetsAt === "number" ? info.resetsAt : null,
     });
@@ -644,9 +649,32 @@ export class ClaudeThreads {
     };
   }
 
+  /** Claude's plan limits: read from Claude's `/usage` data at most once a minute, and as turns report them. */
   public async rateLimits(): Promise<JsonObject> {
+    if (!this.usage || Date.now() - this.usage.at > 60_000) this.usage = { at: Date.now(), done: this.readUsage() };
+    await this.usage.done;
     const snapshot = this.rateLimitSnapshot();
     return { rateLimits: snapshot, rateLimitsByLimitId: { claude: snapshot } };
+  }
+
+  private async readUsage(): Promise<void> {
+    try {
+      const usage = await withProbeQuery(this.config, undefined, (probe) => probe.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }));
+      this.usageError = usage.rate_limits_available ? undefined : "no plan limits for this login (API key or cloud provider)";
+      for (const type of ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"] as const) {
+        const window = usage.rate_limits?.[type];
+        if (typeof window?.utilization !== "number") continue;
+        this.rateLimitWindows.set(type, {
+          status: window.utilization >= 100 ? "rejected" : "allowed",
+          usedPercent: Math.round(window.utilization),
+          windowDurationMins: WINDOW_MINUTES[type]!,
+          resetsAt: window.resets_at ? Math.floor(Date.parse(window.resets_at) / 1000) : null,
+        });
+      }
+    } catch (error) {
+      this.usageError = `limits unavailable: ${error instanceof Error ? error.message : String(error)}`;
+      this.logger.warn("claude.usage.unavailable", { error: this.usageError });
+    }
   }
 
   public rateLimitWindowsText(): string[] {
