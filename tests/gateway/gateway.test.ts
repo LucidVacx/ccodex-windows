@@ -1196,7 +1196,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       await client.turn(threadId, "path", { model });
       const backend = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).lineages[threadId].at(-1).threadId;
       const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
-      return { backend, text: itemsOf(thread.turns).at(-1), live: client.notifications("item/completed", threadId).at(-1)!.params };
+      return { backend, text: itemsOf(thread.turns).at(-1), live: client.notifications("item/completed", threadId).filter((message) => message.params.item.type === "agentMessage").at(-1)!.params };
     };
     for (const [model, path] of [["gpt-6-luna", "/images/%/a.png"], [CLAUDE, "/tasks/%/out"]] as const) {
       const { backend, text, live } = await saved(model);
