@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { Provider } from "../meta.js";
-import { RpcFailure, rpcError, type JsonObject, type RequestId } from "../protocol/codex.js";
+import { rpcError, type JsonObject, type RequestId } from "../protocol/codex.js";
 import type { Gateway } from "./server.js";
 import type { StockClient } from "./stock.js";
 
@@ -116,7 +116,7 @@ export class Connection {
       (result) => this.respond(message.id, result),
       (error: unknown) => {
         this.gateway.logger.warn("request.failed", { method: message.method, error: String(error) });
-        this.send(JSON.stringify({ id: message.id, error: rpcError(error) }), error instanceof RpcFailure && error.verbatim);
+        this.send(JSON.stringify({ id: message.id, error: rpcError(error) }));
       },
     );
   }

@@ -123,8 +123,7 @@ export interface RpcError {
 }
 
 export class RpcFailure extends Error {
-  /** `verbatim`: the message names a switched thread's backend on purpose (not rewritten to its public id). */
-  public constructor(public readonly code: number, message: string, public readonly data?: unknown, public readonly verbatim = false) {
+  public constructor(public readonly code: number, message: string, public readonly data?: unknown) {
     super(message);
   }
 }

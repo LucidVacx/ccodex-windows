@@ -48,6 +48,7 @@ function reply(thread, text) {
   if (text.includes("CONTEXT CHECKPOINT COMPACTION")) return `GPT-SUMMARY(${thread.forkedFromId})`;
   // Title models sometimes wrap the title in markdown.
   if (text.includes("<user_prompt>")) return "**🦊 Fox Title_**";
+  if (text === "path") return `saved /images/${thread.id}/a.png`;
   return `gpt: ${text}`;
 }
 

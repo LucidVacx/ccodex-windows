@@ -183,12 +183,12 @@ export class Gateway {
     }
     if (!threadId) return undefined;
     // A row a client kept from a backend's announcement or listing: gone, as stock says. Only the deletion news drops
-    // it from Desktop's thread catalog, which otherwise never forgets a remote host's thread. Both verbatim: rewritten,
-    // they would be about the public thread.
+    // it from Desktop's thread catalog, which otherwise never forgets a remote host's thread. The news verbatim: rewritten,
+    // it would be about the public thread.
     if (this.lineages.isBackend(threadId)) {
       return async (conn) => {
         conn.send(JSON.stringify({ method: "thread/deleted", params: { threadId } }), true);
-        throw new RpcFailure(-32600, `no rollout found for thread id ${threadId}`, undefined, true);
+        throw new RpcFailure(-32600, `no rollout found for thread id ${threadId}`);
       };
     }
     if ((method === "turn/start" || method === "turn/steer") && isStatusCommand(params)) {

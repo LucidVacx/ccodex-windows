@@ -1094,7 +1094,25 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(await page(nextCursor)).toEqual(before);
   });
 
-  it("opens and pages a claude → gpt thread with stock's cursors as the client got them (its backend id read as the public id)", async () => {
+  it("reads a backend's id as the chat's public id only as a whole value: inside a string (a file path) it stays", async () => {
+    fakeClaude.reply = (text) => text === "path" ? `saved /tasks/${fakeClaude.prompts.at(-1)!.sessionId}/out` : `claude: ${text}`;
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one");
+    const saved = async (model: string) => {
+      await client.turn(threadId, "path", { model });
+      const backend = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).lineages[threadId].at(-1).threadId;
+      const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+      return { backend, text: itemsOf(thread.turns).at(-1), live: client.notifications("item/completed", threadId).at(-1)!.params };
+    };
+    for (const [model, path] of [["gpt-6-luna", "/images/%/a.png"], [CLAUDE, "/tasks/%/out"]] as const) {
+      const { backend, text, live } = await saved(model);
+      expect(backend).not.toBe(threadId);
+      expect(text).toBe(`agent:saved ${path.replace("%", backend)}`);
+      expect(live).toMatchObject({ threadId, item: { text: `saved ${path.replace("%", backend)}` } });
+    }
+  });
+
+  it("opens and pages a claude → gpt thread with stock's cursors as the client got them (each names its own backend)", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "one");
     for (const word of ["two", "three"]) await client.turn(threadId, word, { model: "gpt-6-luna" });
