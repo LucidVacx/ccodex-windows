@@ -635,7 +635,7 @@ export class ClaudeSession {
     const next = continued ? undefined : this.queued.shift();
     if (next) {
       this.emit("thread/queue/changed", { threadId: this.threadId });
-      void this.host.gateway.lineages.startQueued(this, { input: next.input, clientUserMessageId: next.clientUserMessageId }).catch((error: unknown) =>
+      void this.startTurn({ input: next.input, clientUserMessageId: next.clientUserMessageId }).catch((error: unknown) =>
         this.host.logger.warn("claude.queue.start-failed", { threadId: this.threadId, error: String(error) }));
     }
   }

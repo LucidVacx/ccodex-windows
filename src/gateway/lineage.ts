@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { codexPermissions, permissionSettings } from "../claude/sdk.js";
-import type { ClaudeSession } from "../claude/session.js";
 import type { Provider, Segment } from "../meta.js";
 import { invalidRequest, requestedModel, type JsonObject, type Thread, type Turn } from "../protocol/codex.js";
 import { historyCursors, occurrencesPage, paginateItems, paginateTurns, startedTurn, turnCursor, turnView } from "../protocol/turnPagination.js";
@@ -88,8 +87,8 @@ function cursorSegment(cursor: string): number | undefined {
  * list. History is stitched, everything else goes to the current segment's backend.
  */
 export class Lineages {
-  /** Model of the other provider chosen through `thread/settings/update`, and who chose it; the switch runs on the next turn. */
-  private readonly pending = new Map<string, { connection: Connection; params: JsonObject }>();
+  /** Model of the other provider chosen through `thread/settings/update`; the switch runs on the next turn. */
+  private readonly pending = new Map<string, JsonObject>();
   private readonly resumed = new WeakMap<Connection, Set<string>>();
   /** Stock backends being created by switches, their held announcements, and the backends (both providers) created so far. */
   private creatingBackends = 0;
@@ -173,24 +172,6 @@ export class Lineages {
     }
   }
 
-  /**
-   * A message from a Claude chat's queue runs with the thread's settings of the moment, as stock drains its queue:
-   * after the other provider's model was picked, it switches as the picker's `turn/start` would, and the rest of
-   * the queue follows it to the new backend.
-   */
-  public async startQueued(session: ClaudeSession, params: JsonObject): Promise<JsonObject> {
-    const publicId = this.gateway.meta.rewrites.get(session.threadId) ?? session.threadId;
-    const pending = this.pending.get(publicId);
-    if (!pending) return { turn: await session.startTurn(params) };
-    this.pending.delete(publicId);
-    const rest = session.queued.splice(0);
-    const answer = await this.switchProvider(pending.connection, publicId, this.segments(publicId), { ...pending.params, ...params }) as JsonObject;
-    for (const { input, clientUserMessageId } of rest) {
-      await this.gateway.threadRequest(pending.connection, "thread/queue/add", { threadId: publicId, input, clientUserMessageId });
-    }
-    return answer;
-  }
-
   // ---- routing ----
 
   public async handle(connection: Connection, method: string, params: JsonObject): Promise<unknown> {
@@ -201,13 +182,13 @@ export class Lineages {
       const target = this.providerOf(requestedModel(params));
       if (target && target !== current.provider) {
         if (method === "thread/settings/update") {
-          this.pending.set(publicId, { connection, params });
+          this.pending.set(publicId, params);
           return {};
         }
         this.pending.delete(publicId);
         return this.switchProvider(connection, publicId, segments, params);
       }
-      const pending = this.pending.get(publicId)?.params;
+      const pending = this.pending.get(publicId);
       this.pending.delete(publicId);
       if (!target && pending && method === "turn/start") {
         return this.switchProvider(connection, publicId, segments, { ...pending, ...params, model: requestedModel(pending) });
