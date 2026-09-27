@@ -139,7 +139,7 @@ export function loadConfig(): Config {
       ?? join(codexHome(), "app-server-control", "app-server-control.sock")),
     modelPrefix: file.model_prefix ?? "claude:",
     logLevel: process.env.CCODEX_LOG_LEVEL as Config["logLevel"] ?? file.log_level ?? "info",
-    rpcCapture: process.env.CCODEX_RPC_CAPTURE ? process.env.CCODEX_RPC_CAPTURE === "1" : file.rpc_capture ?? true,
+    rpcCapture: process.env.CCODEX_RPC_CAPTURE ? process.env.CCODEX_RPC_CAPTURE === "1" : file.rpc_capture ?? false,
     rpcCaptureMaxBytes: file.rpc_capture_max_bytes ?? 1_073_741_824,
     ...(renamePrompt ? { renamePrompt } : {}),
     ...(file.title_model ? { titleModel: file.title_model as string } : {}),

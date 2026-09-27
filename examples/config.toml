@@ -17,6 +17,6 @@ Return only the title.
 # model_prefix = "claude:"
 
 log_level = "info"
-# Codex App RPC capture under data_dir (rpc.jsonl, mode 0600, rolling).
-rpc_capture = true
+# Codex App RPC capture under data_dir (rpc.jsonl, mode 0600, rolling; holds prompts and outputs). Off by default.
+rpc_capture = false
 rpc_capture_max_bytes = 1073741824

@@ -26,7 +26,7 @@ const codex = JSON.parse(fs.readFileSync(home + "/.codex/auth.json", "utf8"));
 codex.tokens.refresh_token = "stripped-for-container"; codex.last_refresh = new Date().toISOString();
 fs.writeFileSync(out + "/codex.json", JSON.stringify(codex), { mode: 0o600 });
 ' "$WORK/creds"
-exec podman run --rm --init --userns=keep-id ${E2E_PODMAN_ARGS:-} \
+exec podman run --rm --init --userns=keep-id -e CCODEX_RPC_CAPTURE=1 ${E2E_PODMAN_ARGS:-} \
   -v "$WORK/creds/claude.json:/tmp/creds/claude.json:ro" -v "$WORK/creds/codex.json:/tmp/creds/codex.json:ro" \
   -v "$ROOT/scripts/e2e:/e2e:ro" -v "$WORK:/out" \
   ccodex-e2e sh -c 'cp /tmp/creds/claude.json ~/.claude/.credentials.json && cp /tmp/creds/codex.json ~/.codex/auth.json && node /e2e/driver.mjs "$@"' driver "$@"

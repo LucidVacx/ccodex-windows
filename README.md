@@ -207,9 +207,9 @@ threads are titled by the title model (Claude threads get a ` ✳️` suffix); m
 take priority. Setup never restores a prompt removed from an existing config. Other
 optional keys are listed in [`examples/config.toml`](examples/config.toml).
 
-RPC capture is on by default under `~/.ccodex/state` (mode `0600`, rolls at a combined
-1 GiB) and includes prompts/outputs (`rpc_capture = false` turns it off) — and it never
-leaves your disk.
+For bug reports, `rpc_capture = true` records every App RPC frame under `~/.ccodex/state`
+(`rpc.jsonl`, mode `0600`, rolls at a combined 1 GiB), prompts and outputs included — it is
+off by default and never leaves your disk.
 
 Client quirk worth knowing: the built-in `/status` differs by client (Mobile consumes
 provider-labelled quota events; Desktop may render its own OpenAI-account view).
