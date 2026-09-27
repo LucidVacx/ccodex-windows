@@ -731,6 +731,30 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(await found("haystack")).toBeUndefined();
   });
 
+  it("finds a Claude thread's occurrences like stock, and each one's turn through its cursor", async () => {
+    const threadId = await claudeThread();
+    const first = (await client.turn(threadId, "first needle")).turn;
+    await client.turn(threadId, "nothing here");
+    const third = (await client.turn(threadId, `${"é".repeat(60)} NEEDLE, **needle** 🙂`)).turn;
+    const search = (params: object) => client.request("thread/searchOccurrences", { threadId, ...params });
+    const { data, nextCursor } = await search({ searchTerm: "Needle" });
+    expect(nextCursor).toBeNull();
+    // Every match of the prompts and final answers ("claude: <prompt>"), oldest first; markdown is not searched.
+    expect(data.map((found: any) => [found.turnId, found.snippet.slice(found.snippetMatchRange.start, found.snippetMatchRange.end)])).toEqual([
+      [first.id, "needle"], [first.id, "needle"],
+      [third.id, "NEEDLE"], [third.id, "needle"], [third.id, "NEEDLE"], [third.id, "needle"],
+    ]);
+    expect(data[2].snippet).toBe(`... ${"é".repeat(48)} NEEDLE, **needle** 🙂`);
+    const paged = await search({ searchTerm: "needle", limit: 4 });
+    expect(paged.data).toEqual(data.slice(0, 4));
+    expect((await search({ searchTerm: "needle", cursor: paged.nextCursor })).data).toEqual(data.slice(4));
+    expect((await search({ searchTerm: "absent" })).data).toEqual([]);
+    // Desktop opens a match by its turn cursor.
+    const { data: [turn] } = await client.request("thread/turns/list", { threadId, cursor: data[2].turnCursor, limit: 1, itemsView: "full" });
+    expect(turn.id).toBe(third.id);
+    expect(turn.items.map((item: any) => item.id)).toContain(data[2].itemId);
+  });
+
   it("keeps a Claude thread's name through an edit of its only message", async () => {
     const threadId = await claudeThread();
     const { turn } = await client.turn(threadId, "one");

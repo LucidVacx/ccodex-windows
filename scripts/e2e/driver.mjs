@@ -1,7 +1,7 @@
 // E2E driver (runs inside the container): starts the gateway through the managed `codex` shim, talks to it like
 // Desktop over the control socket, and exercises every feature with real models. Results → /out/results.json.
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -31,6 +31,12 @@ const redPng = (size) => {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", header), chunk("IDAT", deflateSync(Buffer.concat(Array(size).fill(row)))), chunk("IEND", Buffer.alloc(0))]);
 };
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const waitUntil = async (condition, ms, what) => {
+  for (const until = Date.now() + ms; !(await condition());) {
+    if (Date.now() > until) throw new Error(`timed out: ${what}`);
+    await sleep(500);
+  }
+};
 const text = (value) => [{ type: "text", text: value, text_elements: [] }];
 const itemsOf = (turns) => turns.flatMap((turn) => turn.items.map((item) => item.type === "userMessage"
   ? `user:${item.content?.[0]?.text ?? ""}` : item.type === "agentMessage" ? `agent:${item.text}` : item.type));
@@ -295,6 +301,63 @@ const scenarios = {
     }
     fresh.close();
     return { items, paged: paged.length, row: { provider: rows[0].modelProvider, model: rows[0].model, name: rows[0].name } };
+  },
+
+  /** Find in chat across a switched thread's segments (stock's own search for the GPT one), and search of all chats. */
+  async searchInChat() {
+    const threadId = state.switched;
+    const { data } = await client.request("thread/searchOccurrences", { threadId, searchTerm: "pineapple", limit: 250 });
+    const turns = new Map(state.switchedTurns.map((turn) => [turn.id, turn]));
+    check(data.every((found) => found.snippet.slice(found.snippetMatchRange.start, found.snippetMatchRange.end).toLowerCase() === "pineapple"), "match ranges", data);
+    const segments = new Set(data.map((found) => state.switchedTurns.findIndex((turn) => turn.id === found.turnId)));
+    check(data.length >= 3 && !segments.has(-1), "occurrences in stitched turns", data);
+    // The GPT segment's turn: its answer names the word.
+    const gpt = state.switchedTurns.find((turn) => turn.items.some((item) => item.type === "userMessage" && JSON.stringify(item.content).includes("What is the secret word")));
+    check(data.some((found) => found.turnId === gpt?.id && turns.get(found.turnId).items.find((item) => item.id === found.itemId)?.type === "agentMessage"), "found in the gpt answer too", { gpt: gpt?.id, data });
+    // Desktop opens each match by its turn cursor.
+    for (const found of data) {
+      const { data: [turn] } = await client.request("thread/turns/list", { threadId, cursor: found.turnCursor, limit: 1, sortDirection: "desc", itemsView: "full" });
+      check(turn?.id === found.turnId && turn.items.some((item) => item.id === found.itemId), "turn cursor opens the match", { found, turn: turn?.id });
+    }
+    const listed = (await client.request("thread/search", { searchTerm: "PINEAPPLE", limit: 50 })).data.map((result) => result.thread.id);
+    check(listed.includes(threadId), "search of all chats finds it", listed);
+    return { occurrences: data.length, turns: [...segments] };
+  },
+
+  /** Copies of very big real transcripts (mounted at /big, container only): search of all chats and in chat, timed. */
+  async searchBigChats() {
+    if (!existsSync("/big")) throw new Error("mount big transcripts at /big (E2E_PODMAN_ARGS='-v <dir>:/big:ro')");
+    const dir = join(HOME, ".claude", "projects", "-home-node-big");
+    mkdirSync(dir, { recursive: true });
+    const report = [];
+    for (const file of readdirSync("/big").filter((name) => name.endsWith(".jsonl"))) {
+      copyFileSync(join("/big", file), join(dir, file));
+      const threadId = file.slice(0, -6);
+      // A word of the first prompt: the oldest turn holds it, so find in chat reads back to it.
+      const lines = readFileSync(join(dir, file), "utf8").split("\n");
+      const promptText = (record) => record?.type === "user" && !record.isMeta && !record.isSidechain && !record.isCompactSummary
+        ? typeof record.message?.content === "string" ? record.message.content : (record.message?.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n")
+        : "";
+      const prompt = lines.map((line) => { try { return promptText(JSON.parse(line)); } catch { return ""; } })
+        .find((text) => !text.trimStart().startsWith("<") && /[A-Za-zА-Яа-я]{7,}/u.test(text));
+      const term = prompt.match(/[A-Za-zА-Яа-я]{7,}/u)[0];
+      const timed = async (method, params) => { const at = Date.now(); const result = await client.request(method, params); return [result, Date.now() - at]; };
+      await waitUntil(async () => (await client.request("thread/list", { limit: 200 })).data.some((row) => row.id === threadId), 60_000, `${threadId} listed`);
+      const [all, searchMs] = await timed("thread/search", { searchTerm: term, limit: 50 });
+      check(all.data.some((result) => result.thread.id === threadId), "search of all chats finds it", { term, threadId });
+      const [found, findMs] = await timed("thread/searchOccurrences", { threadId, searchTerm: term, limit: 250 });
+      check(found.data.length > 0, "find in chat", { term, threadId });
+      const first = found.data[0];
+      const [{ data: [turn] }, openMs] = await timed("thread/turns/list", { threadId, cursor: first.turnCursor, limit: 1, sortDirection: "desc", itemsView: "full" });
+      check(turn?.id === first.turnId && turn.items.some((item) => item.id === first.itemId), "turn cursor opens the oldest match", { first, turn: turn?.id });
+      const [absent, absentMs] = await timed("thread/searchOccurrences", { threadId, searchTerm: "zq-absent-term-xj", limit: 250 });
+      check(absent.data.length === 0 && absentMs < 3000, "nothing found at once", { absentMs });
+      const [newest, pageMs] = await timed("thread/turns/list", { threadId, limit: 5, sortDirection: "desc", itemsView: "full" });
+      check(newest.data.length === 5, "newest page after the search", newest.data.length);
+      check(searchMs < 10_000 && findMs < 30_000 && openMs < 30_000, "fast enough", { searchMs, findMs, openMs });
+      report.push({ file, mb: Math.round(statSync(join(dir, file)).size / 1e6), term, occurrences: found.data.length, more: found.nextCursor !== null, searchMs, findMs, openMs, absentMs, pageMs });
+    }
+    return report;
   },
 
   async forkBeforeCompaction() {

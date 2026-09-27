@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { codexPermissions } from "../claude/sdk.js";
 import type { Provider, Segment } from "../meta.js";
 import { invalidRequest, requestedModel, type JsonObject, type Thread, type Turn } from "../protocol/codex.js";
-import { historyCursors, paginateItems, paginateTurns, startedTurn, turnCursor, turnView } from "../protocol/turnPagination.js";
+import { historyCursors, occurrencesPage, paginateItems, paginateTurns, startedTurn, turnCursor, turnView } from "../protocol/turnPagination.js";
 import type { Connection } from "./connection.js";
 import type { Gateway } from "./server.js";
 
@@ -191,6 +191,21 @@ export class Lineages {
         }
         this.gateway.meta.deleteLineage(publicId);
         return {};
+      }
+      // Every segment's occurrences, oldest first; each turn cursor names its segment, as the stitched pages read them.
+      case "thread/searchOccurrences": {
+        const all: JsonObject[] = [];
+        for (const [index, segment] of segments.entries()) {
+          let cursor: string | null = null;
+          do {
+            const request: JsonObject = { threadId: segment.threadId, searchTerm: params.searchTerm, cursor, limit: 250 };
+            const page: JsonObject = segment.provider === "claude" ? await this.gateway.claude.searchOccurrences(segment.threadId, request)
+              : await this.gateway.stock.request(method, request);
+            all.push(...page.data.map((found: JsonObject) => ({ ...found, turnCursor: withSegment(turnCursor(found.turnId, true), index) })));
+            cursor = page.nextCursor;
+          } while (cursor);
+        }
+        return occurrencesPage(all, params);
       }
       default:
         return this.forward(connection, current, method, params);

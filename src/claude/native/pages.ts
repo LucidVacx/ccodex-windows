@@ -151,6 +151,9 @@ function trim(window: Window, offset: number): void {
   for (const [uuid, position] of window.offsets) if (position < window.start) window.offsets.delete(uuid);
 }
 
+/** Whether a window's turns are enough; `start`: where the first of them starts in the file, when the window knows. */
+type Enough = (turns: readonly Turn[], start?: number) => boolean;
+
 export class TranscriptPages {
   /** The newest part of the file; follows Claude's writes. */
   private live?: Window & { readonly ino: number; cache?: { readonly key: string; readonly window: TurnWindow } };
@@ -193,6 +196,11 @@ export class TranscriptPages {
     });
   }
 
+  /** The newest turns back to the one holding the record at `offset` (bytes into the file). */
+  public reaching(source: PageSource, offset: number): Promise<TurnWindow> {
+    return this.serial(() => this.liveWindow(source, (_turns, start) => start !== undefined && start <= offset, 1));
+  }
+
   /** The newest turns back to `turnId`. */
   public since(source: PageSource, turnId: string): Promise<TurnWindow> {
     return this.serial(() => this.liveWindow(source, (turns) => turns.some((turn) => turn.id === turnId), 1));
@@ -223,7 +231,7 @@ export class TranscriptPages {
     return run;
   }
 
-  private async liveWindow(source: PageSource, enough: (turns: readonly Turn[]) => boolean, keep: number): Promise<TurnWindow> {
+  private async liveWindow(source: PageSource, enough: Enough, keep: number): Promise<TurnWindow> {
     const { ino, size } = await stat(source.path);
     if (!this.live || this.live.ino !== ino || size < this.live.end) {
       this.live = { ...emptyWindow(size), ino };
@@ -250,7 +258,7 @@ export class TranscriptPages {
     window: Window,
     leafUuid: string | undefined,
     continues: boolean,
-    enough: (turns: readonly Turn[]) => boolean,
+    enough: Enough,
     physical = false,
   ): Promise<TurnWindow> {
     for (let chunk = this.chunkBytes; ; chunk *= 2) {
@@ -268,7 +276,8 @@ export class TranscriptPages {
         const partial = projection.turnBoundaries.findIndex((bound) => window.offsets.get(bound.firstUuid)! > leafAt);
         const whole = partial < 0 ? projection.turns.length : partial;
         const turns = projection.turns.slice(older ? 1 : 0, whole);
-        if (!older || enough(turns) && !projection.partialCompaction) {
+        const first = projection.turnBoundaries[older ? 1 : 0];
+        if (!older || enough(turns, first && window.offsets.get(first.firstUuid)) && !projection.partialCompaction) {
           this.index(window, projection, older, continues, physical, whole);
           return { turns, older, projection };
         }

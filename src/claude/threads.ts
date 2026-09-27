@@ -10,10 +10,11 @@ import type { Gateway } from "../gateway/server.js";
 import type { Logger } from "../log.js";
 import { packageVersion } from "../management/commands.js";
 import { invalidParams, invalidRequest, requestedModel, type JsonObject, type Thread, type ThreadItem, type Turn } from "../protocol/codex.js";
-import { anchorCursor, historyCursors, paginateItems, paginateTurns, startedTurn } from "../protocol/turnPagination.js";
+import { anchorCursor, historyCursors, occurrencesPage, paginateItems, paginateTurns, startedTurn, turnOccurrences } from "../protocol/turnPagination.js";
 import { normalizeUserInput } from "./inputMapper.js";
 import { claudeModelLabel, modelCatalogValue, normalizeClaudeModelIdentifier } from "./modelSelection.js";
 import { NativeSessionCatalog, type SessionSummary } from "./native/catalog.js";
+import { firstMatch } from "./native/search.js";
 import { nativeThread, type TranscriptProjection } from "./native/projector.js";
 import { projectSubagents, type ProjectedSubagent } from "./native/subagents.js";
 import { readTranscriptRecords } from "./native/records.js";
@@ -486,6 +487,19 @@ export class ClaudeThreads {
     return paginateTurns(this.withLive(threadId, window.turns), params);
   }
 
+  /** Stock's `thread/searchOccurrences`: history is read back only to the first message holding the term (ripgrep finds it). */
+  public async searchOccurrences(threadId: string, params: JsonObject): Promise<JsonObject> {
+    if (!String(params.searchTerm ?? "").trim()) throw invalidRequest("thread/searchOccurrences requires a non-empty searchTerm");
+    if (!this.catalog.get(threadId)) await this.catalog.refresh();
+    let turns: Turn[];
+    if (this.paged(threadId)) {
+      const { pages, source } = this.pages(threadId);
+      const at = await firstMatch(this.config.claudeBinary, source.path, params.searchTerm);
+      turns = this.withLive(threadId, at === undefined ? [] : (await pages.reaching(source, at)).turns);
+    } else turns = (await this.read(threadId)).turns;
+    return occurrencesPage(turnOccurrences(turns, params.searchTerm), params);
+  }
+
   public async itemsPage(threadId: string, params: JsonObject): Promise<JsonObject> {
     if (!this.catalog.get(threadId)) await this.catalog.refresh();
     // Desktop always names the turn; items across the whole thread need all of it.
@@ -817,6 +831,7 @@ export class ClaudeThreads {
       case "thread/read": return { thread: params.includeTurns ? await this.read(threadId).then(({ thread, turns }) => ({ ...thread, turns })) : await this.thread(threadId) };
       case "thread/turns/list": return this.turnsPage(threadId, params);
       case "thread/items/list": return this.itemsPage(threadId, params);
+      case "thread/searchOccurrences": return this.searchOccurrences(threadId, params);
       case "turn/start": {
         this.gateway.subscribe(threadId, connection);
         return { turn: await this.session(threadId).startTurn(params) };
@@ -949,6 +964,7 @@ export class ClaudeThreads {
       }
       case "thread/turns/list": return paginateTurns(side.turns, params);
       case "thread/items/list": return paginateItems(side.turns, params);
+      case "thread/searchOccurrences": return occurrencesPage(turnOccurrences(side.turns, params.searchTerm), params);
       case "thread/unsubscribe":
       case "thread/delete":
       case "thread/archive":

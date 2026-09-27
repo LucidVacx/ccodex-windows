@@ -27,32 +27,51 @@ function visibleText(line: string): string | undefined {
   return record.message.content.flatMap((block) => block.type === "text" ? [String(block.text)] : []).join("\n");
 }
 
-/**
- * Transcript path → snippet for every top-level transcript under `projectsDir` whose visible messages hold `term`,
- * any case. Claude's own ripgrep (its binary run as `rg`) does the reading; lines over 100 KB (tool output) are
- * left out.
- */
-export async function searchTranscripts(claudeBinary: string, projectsDir: string, term: string): Promise<Map<string, string>> {
-  const lower = term.toLowerCase();
-  const child = spawn(claudeBinary, ["--null", "--no-heading", "--no-line-number", "--fixed-strings", "--ignore-case",
-    "--max-columns", "100000", "--no-ignore", "--hidden", "--max-depth", "2", "--glob", "*.jsonl", "--", term, projectsDir],
-  { argv0: "rg", stdio: ["ignore", "pipe", "pipe"] });
+/** Claude's own ripgrep (its binary run as `rg`) over `args`, a fixed string any case; each output line to `line`, which stops the search by returning true. Lines over 100 KB (tool output) are left out. */
+async function ripgrep(claudeBinary: string, args: string[], line: (text: string) => boolean): Promise<void> {
+  const child = spawn(claudeBinary, ["--fixed-strings", "--ignore-case", "--max-columns", "100000", "--no-ignore", "--hidden", ...args],
+    { argv0: "rg", stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
-  // 0: found, 1: nothing found.
+  // 0: found, 1: nothing found; stopped early: killed.
   const exited = new Promise<void>((resolve, reject) => {
     child.on("error", reject);
-    child.on("close", (code) => code === 0 || code === 1 ? resolve() : reject(new Error(`rg: ${stderr.trim()}`)));
+    child.on("close", (code) => code === 0 || code === 1 || child.killed ? resolve() : reject(new Error(`rg: ${stderr.trim()}`)));
   });
+  for await (const text of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
+    if (line(text)) {
+      child.kill();
+      break;
+    }
+  }
+  await exited;
+}
+
+/** Transcript path → snippet for every top-level transcript under `projectsDir` whose visible messages hold `term`. */
+export async function searchTranscripts(claudeBinary: string, projectsDir: string, term: string): Promise<Map<string, string>> {
+  const lower = term.toLowerCase();
   const found = new Map<string, string>();
-  for await (const line of createInterface({ input: child.stdout, crlfDelay: Infinity })) {
+  await ripgrep(claudeBinary, ["--null", "--no-heading", "--no-line-number", "--max-depth", "2", "--glob", "*.jsonl", "--", term, projectsDir], (line) => {
     const split = line.indexOf("\0");
     const path = line.slice(0, split);
-    if (found.has(path)) continue;
+    if (found.has(path)) return false;
     const text = visibleText(line.slice(split + 1));
     const match = text && snippet(text, lower);
     if (match) found.set(path, match);
-  }
-  await exited;
+    return false;
+  });
   return found;
+}
+
+/** Where (bytes into the file) the first visible message of the transcript holding `term` is, if one does. */
+export async function firstMatch(claudeBinary: string, path: string, term: string): Promise<number | undefined> {
+  const lower = term.toLowerCase();
+  let offset: number | undefined;
+  await ripgrep(claudeBinary, ["--byte-offset", "--no-filename", "--no-line-number", "--", term, path], (line) => {
+    const split = line.indexOf(":");
+    if (!visibleText(line.slice(split + 1))?.toLowerCase().includes(lower)) return false;
+    offset = Number(line.slice(0, split));
+    return true;
+  });
+  return offset;
 }

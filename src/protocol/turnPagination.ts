@@ -128,3 +128,53 @@ export function historyCursors(turns: readonly Turn[]): {
     itemsBackwardsCursor: lastItem ? itemCursor(lastItem.id, true) : null,
   };
 }
+
+interface Occurrence {
+  turnId: string;
+  itemId: string;
+  snippet: string;
+  snippetMatchRange: { start: number; end: number };
+  turnCursor: string;
+}
+
+/** What stock searches in an agent message: its text without markdown (links read as their labels). */
+function plainText(markdown: string): string {
+  return markdown.replace(/!?\[([^\]]*)\]\([^)]*\)/gu, "$1").replace(/[*_`#>|~]+/gu, " ").split(/\s+/u).filter(Boolean).join(" ");
+}
+
+/**
+ * Stock's `thread/searchOccurrences` (codex-rs thread-store `search.rs`) over turns, oldest first: every match of the
+ * term, any case, in user messages and each turn's final agent message, with the 49 characters before it and 96
+ * after; the match range counts UTF-16 units, as JavaScript does.
+ */
+export function turnOccurrences(turns: readonly Turn[], term: string): Occurrence[] {
+  const needle = term.toLowerCase();
+  return turns.flatMap((turn) => {
+    const final = finalAgentItem(turn);
+    return turn.items.filter((item) => item.type === "userMessage" || item === final).flatMap((item) => {
+      const text = item.type === "userMessage" ? item.content.flatMap((input) => input.type === "text" ? [input.text] : []).join("")
+        : plainText(String((item as { text: string }).text));
+      const found: Occurrence[] = [];
+      for (let at = text.toLowerCase().indexOf(needle); at >= 0; at = text.toLowerCase().indexOf(needle, at + needle.length)) {
+        const before = [...text.slice(0, at)];
+        const after = [...text.slice(at + needle.length)];
+        const head = before.slice(Math.max(0, before.length - 49)).join("");
+        const lead = before.length > 49 ? "... " : "";
+        const start = lead.length + head.length;
+        found.push({
+          turnId: turn.id, itemId: item.id, turnCursor: turnCursor(turn.id, true),
+          snippet: `${lead}${head}${text.slice(at, at + needle.length)}${after.slice(0, 96).join("")}${after.length > 96 ? " ..." : ""}`,
+          snippetMatchRange: { start, end: start + needle.length },
+        });
+      }
+      return found;
+    });
+  });
+}
+
+/** A `thread/searchOccurrences` page of all occurrences (50 by default, at most 250). */
+export function occurrencesPage<T>(all: readonly T[], params: { searchTerm?: string; cursor?: string | null; limit?: number | null }): { data: T[]; nextCursor: string | null } {
+  const from = params.cursor ? Number((JSON.parse(params.cursor) as { index: number }).index) : 0;
+  const limit = Math.max(1, Math.min(params.limit ?? 50, 250));
+  return { data: all.slice(from, from + limit), nextCursor: from + limit < all.length ? JSON.stringify({ searchTerm: params.searchTerm, index: from + limit }) : null };
+}
