@@ -449,6 +449,13 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two", "user:four", "agent:claude: four"]);
   });
 
+  it("runs a Claude chat with no effort chosen at the effort the picker shows for its model, not Claude's own default", async () => {
+    const opus = (await client.request("model/list", {})).data.find((model: any) => model.id === CLAUDE);
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one");
+    expect(fakeClaude.options.at(-1)!.effort).toBe(opus.defaultReasoningEffort);
+  });
+
   it("offers stock's ultra effort on Claude models: Claude's max, delegation told on and off like stock's mode message, out of the history", async () => {
     const opus = (await client.request("model/list", {})).data.find((model: any) => model.id === CLAUDE);
     expect(opus.supportedReasoningEfforts.map((effort: any) => effort.reasoningEffort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);

@@ -302,11 +302,12 @@ export class ClaudeSession {
 
   private options(): Options {
     const settings = this.settings;
+    const effort = claudeEffort(this.host.effort(settings));
     return {
       ...baseOptions(this.host.config),
       cwd: settings.cwd,
       ...(settings.model ? { model: settings.model } : {}),
-      ...(settings.effort ? { effort: claudeEffort(settings.effort) as never } : {}),
+      ...(effort ? { effort: effort as never } : {}),
       ...(settings.fast ? { settings: { fastMode: true } } : {}),
       permissionMode: claudeMode(settings),
       // Claude enters plan mode only as the user sets it (stock's collaboration mode).
@@ -530,8 +531,9 @@ export class ClaudeSession {
       if (next.model !== previous.model) await this.sdk.setModel(next.model ?? undefined);
       // The CLI settles the mode per model (no auto mode on Haiku falls back to default): a new model re-applies it.
       if (claudeMode(next) !== claudeMode(previous) || next.model !== previous.model) await this.sdk.setPermissionMode(claudeMode(next));
-      if (next.effort !== previous.effort || next.fast !== previous.fast) {
-        await this.sdk.applyFlagSettings({ effortLevel: claudeEffort(next.effort) as never, fastMode: next.fast });
+      const effort = this.host.effort(next);
+      if (effort !== this.host.effort(previous) || next.fast !== previous.fast) {
+        await this.sdk.applyFlagSettings({ effortLevel: claudeEffort(effort) as never, fastMode: next.fast });
       }
     }
   }

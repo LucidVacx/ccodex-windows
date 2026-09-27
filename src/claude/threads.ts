@@ -784,7 +784,19 @@ export class ClaudeThreads {
       this.contextWindows.set(modelCatalogValue(model), model.contextWindow);
       if (model.resolvedModel) this.contextWindows.set(normalizeClaudeModelIdentifier(model.resolvedModel), model.contextWindow);
     }
-    return models.filter((model) => model.value !== "default").map((model) => mapClaudeModel(model, this.config.modelPrefix));
+    const mapped = models.filter((model) => model.value !== "default").map((model) => mapClaudeModel(model, this.config.modelPrefix));
+    for (const [index, model] of models.filter((model) => model.value !== "default").entries()) {
+      if (!model.supportedEffortLevels?.length) continue;
+      const effort = mapped[index]!.defaultReasoningEffort as string;
+      this.defaultEfforts.set(modelCatalogValue(model), effort);
+      if (model.resolvedModel) this.defaultEfforts.set(normalizeClaudeModelIdentifier(model.resolvedModel), effort);
+    }
+    return mapped;
+  }
+
+  /** The effort Claude runs at: the chat's, else its model's default as the picker shows it (Claude's own may differ). */
+  public effort(settings: SessionSettings): string | null {
+    return settings.effort ?? this.defaultEfforts.get(normalizeClaudeModelIdentifier(settings.model || this.defaultModel || "")) ?? null;
   }
 
   /** The context window Claude works with for a model (picker value or resolved id; none: the default model). */
@@ -798,6 +810,7 @@ export class ClaudeThreads {
 
   private readonly pendingNames = new Map<string, string>();
   private readonly pickerValues = new Map<string, string>();
+  private readonly defaultEfforts = new Map<string, string>();
   private readonly skillCache = new Map<string, { at: number; skills: Promise<JsonObject[]> }>();
 
   public async skills(cwds: readonly string[]): Promise<Map<string, JsonObject[]>> {
