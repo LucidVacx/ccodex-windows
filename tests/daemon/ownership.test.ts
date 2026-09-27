@@ -72,7 +72,8 @@ describe("gateway socket ownership", () => {
     } finally {
       child.kill("SIGKILL");
     }
-  });
+  // A scan reads every process's descriptors: ~30 ms on a host with a thousand processes.
+  }, 20_000);
 
   it("treats an owner exit during identification as a vacant endpoint", () => {
     const runtime: SocketOwnershipRuntime = {
