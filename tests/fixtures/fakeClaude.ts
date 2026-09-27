@@ -449,7 +449,9 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
       rate_limits_available: true,
       rate_limits: fakeClaude.usageDown ? null : { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 3, resets_at: null }, seven_day_opus: null, model_scoped: [{ display_name: "Fable", utilization: 40, resets_at: null }] },
     }),
-    askSideQuestion: (question: string) => Promise.resolve({ response: `side: ${question}` }),
+    // Asked for JSON, Claude's side question still wraps it in prose.
+    askSideQuestion: (question: string) => Promise.resolve({ response: question.includes("JSON Schema")
+      ? `Here it is:\n\`\`\`json\n${JSON.stringify({ description: `side: ${question.split("\n")[0]}` })}\n\`\`\`` : `side: ${question}` }),
     interrupt: (...args: unknown[]) => {
       stopGoal?.();
       stopGoal = undefined;

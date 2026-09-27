@@ -845,7 +845,10 @@ export class ClaudeThreads {
 
   private async sideTurn(side: SideThread, params: JsonObject): Promise<Turn> {
     const input = normalizeUserInput(params.input ?? []);
-    const question = input.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
+    // Desktop's description turn (after a rename) wants JSON matching its schema; Claude's side question answers in prose.
+    const schema = params.outputSchema;
+    const typed = input.flatMap((item) => item.type === "text" ? [item.text] : []).join("\n");
+    const question = schema ? `${typed}\n\nAnswer with only a JSON object matching this JSON Schema, nothing else:\n${JSON.stringify(schema)}` : typed;
     const id = randomUUID();
     const started = Math.floor(Date.now() / 1000);
     const turn: Turn = { id, items: [], itemsView: "full", status: "inProgress", error: null, startedAt: started, completedAt: null, durationMs: null };
@@ -865,6 +868,7 @@ export class ClaudeThreads {
         text = await this.session(side.sourceId).askSideQuestion(history.length
           ? `Earlier in this side conversation:\n${history.join("\n")}\n\nNew question: ${question}`
           : question);
+        if (schema) text = JSON.stringify(JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)));
       } catch (error) {
         text = `Side question failed: ${error instanceof Error ? error.message : String(error)}`;
         failed = true;

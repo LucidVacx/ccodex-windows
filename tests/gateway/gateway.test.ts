@@ -586,6 +586,26 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     }
   });
 
+  it("answers Desktop's description turn on a Claude chat's ephemeral fork (after a rename) with JSON matching its schema", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "context");
+    const { thread: fork } = await client.request("thread/fork", {
+      threadId, model: "gpt-6-luna", approvalPolicy: "never", permissions: ":read-only", runtimeWorkspaceRoots: [], ephemeral: true,
+      excludeTurns: true, threadSource: "thread_description",
+    });
+    const outputSchema = {
+      $schema: "https://json-schema.org/draft/2020-12/schema", type: "object", properties: { description: { type: "string", minLength: 1 } },
+      required: ["description"], additionalProperties: false,
+    };
+    await client.turn(fork.id, "You are in a fork of an existing Codex thread.\nFill the structured description field.", {
+      turnTrigger: "thread_description", permissions: ":read-only", summary: "none", outputSchema,
+    });
+    const answer = client.notifications("item/completed", fork.id).map((message) => message.params.item).find((item) => item.type === "agentMessage");
+    expect(JSON.parse(answer.text)).toEqual({ description: "side: You are in a fork of an existing Codex thread." });
+    // Asked of the chat's own session, never as a turn of the chat.
+    expect(fakeClaude.prompts.map((prompt) => prompt.text)).toEqual(["context"]);
+  });
+
   it("maps /goal to Claude's native goal the way stock runs goals", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "start");
