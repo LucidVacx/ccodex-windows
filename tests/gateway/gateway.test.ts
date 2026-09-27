@@ -465,6 +465,21 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two", "user:three", "agent:claude: three"]);
   });
 
+  it("keeps an ultra chat on ultra after a restart: delegation is told on once and off once (Claude records max and the mode message)", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one", { effort: "ultra" });
+    await gateway.stop();
+    gateway = await startTestGateway();
+    client = await gateway.connect();
+    expect((await client.request("thread/read", { threadId })).thread.reasoningEffort).toBe("ultra");
+    expect(await client.request("thread/resume", { threadId })).toMatchObject({ reasoningEffort: "ultra" });
+    await client.turn(threadId, "two", { effort: null });
+    await client.turn(threadId, "three", { effort: "high" });
+    const told = fakeClaude.prompts.filter((prompt) => !prompt.shouldQuery).map((prompt) =>
+      prompt.text.includes("Proactive multi-agent delegation is active") ? "on" : prompt.text.includes("delegation no longer applies") ? "off" : prompt.text);
+    expect(told).toEqual(["on", "off"]);
+  });
+
   it("keeps a Claude model switch out of the thread's history", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "on opus");

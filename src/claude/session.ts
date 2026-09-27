@@ -204,8 +204,8 @@ export class ClaudeSession {
   public goalObjective: string | null | undefined;
   /** The running turn's result came: Claude answering again means it took another prompt by itself. */
   private afterResult = false;
-  /** Proactive delegation (the `ultra` effort) as last told to Claude. */
-  private delegating = false;
+  /** Proactive delegation (the `ultra` effort) as last told to Claude (its transcript's, for a chat loaded again). */
+  private delegating: boolean;
   /** A task's end came with no turn running: the command Claude runs for it goes on after the last answer. */
   private notified = false;
   /** Claude's last block since a turn began (its item id; the text item while it streams text). */
@@ -222,6 +222,7 @@ export class ClaudeSession {
   ) {
     this.exists = options.exists;
     this.resumeAt = options.resumeAt;
+    this.delegating = host.summary(threadId)?.delegating ?? false;
     this.keepPlan();
   }
 

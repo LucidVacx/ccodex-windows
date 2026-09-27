@@ -11,6 +11,7 @@ import type { Logger } from "../log.js";
 import { packageVersion } from "../management/commands.js";
 import { invalidParams, invalidRequest, requestedModel, type JsonObject, type Thread, type ThreadItem, type Turn } from "../protocol/codex.js";
 import { anchorCursor, historyCursors, occurrencesPage, paginateItems, paginateTurns, startedTurn, turnOccurrences } from "../protocol/turnPagination.js";
+import { claudeEffort, ULTRA } from "./delegation.js";
 import { normalizeUserInput } from "./inputMapper.js";
 import { claudeModelLabel, modelCatalogValue, normalizeClaudeModelIdentifier } from "./modelSelection.js";
 import { NativeSessionCatalog, type SessionSummary } from "./native/catalog.js";
@@ -58,6 +59,11 @@ const MAX_PROCESSES = Number(process.env.CCODEX_E2E_MAX_PROCESSES) || 10;
 function recordedPermissions(threadId: string, recorded: string | null | undefined, meta: Meta): Pick<SessionSettings, "permissionMode" | "plan"> {
   if (recorded !== "plan") return { permissionMode: (recorded ?? "default") as PermissionMode, plan: false };
   return { permissionMode: (meta.plan(threadId)?.permissionMode ?? "default") as PermissionMode, plan: true };
+}
+
+/** A chat's effort from its transcript: Claude records `ultra` as the max it runs at, told to delegate. */
+function recordedEffort(summary: SessionSummary): string | null {
+  return summary.delegating && summary.reasoningEffort === claudeEffort(ULTRA) ? ULTRA : summary.reasoningEffort;
 }
 
 /** The Claude side of the gateway: catalog of native sessions, live sessions, side chats, models, skills. */
@@ -235,7 +241,7 @@ export class ClaudeThreads {
       ...summary,
       aiTitle: this.gateway.titles.naming(summary.sessionId) ? null : summary.aiTitle,
       model: session?.settings.model ?? this.recordedModel(summary),
-      reasoningEffort: session?.settings.effort ?? summary.reasoningEffort,
+      reasoningEffort: session?.settings.effort ?? recordedEffort(summary),
     };
   }
 
@@ -540,7 +546,7 @@ export class ClaudeThreads {
     return {
       cwd: summary?.cwd ?? process.cwd(),
       model: (summary && this.recordedModel(summary)) || this.defaultModel,
-      effort: summary?.reasoningEffort ?? null,
+      effort: summary ? recordedEffort(summary) : null,
       fast: summary?.serviceTier === "fast",
       ...recordedPermissions(threadId, summary?.permissionMode, this.gateway.meta),
     };

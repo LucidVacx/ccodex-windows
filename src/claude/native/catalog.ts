@@ -20,6 +20,8 @@ export interface SessionSummary extends TranscriptHeader {
   readonly projectKey: string;
   readonly sizeBytes: number;
   readonly hasSubagents: boolean;
+  /** Proactive delegation (the `ultra` effort) as the transcript last told Claude. */
+  readonly delegating: boolean;
 }
 
 interface CatalogEntry {
@@ -86,6 +88,7 @@ function summaryOf(file: DiscoveredFile, state: TranscriptSummaryState): Session
   return {
     ...new TranscriptSummarizer(state).header(),
     sessionId: file.sessionId, path: file.path, projectKey: file.projectKey, sizeBytes: file.size, hasSubagents: file.hasSubagents,
+    delegating: state.delegating,
   };
 }
 

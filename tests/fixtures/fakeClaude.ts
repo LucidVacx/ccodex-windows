@@ -385,7 +385,8 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   yield base(sessionId, { type: "stream_event", event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: reply } } });
   yield base(sessionId, { type: "stream_event", event: { type: "message_stop" } });
   const assistant = { type: "assistant", message: { id: messageId, role: "assistant", model, content: [{ type: "text", text: reply }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 3 } } };
-  transcript.write({ ...assistant, apiBlockIndex: textIndex });
+  // Like the CLI: the record names the effort the model ran at.
+  transcript.write({ ...assistant, apiBlockIndex: textIndex, ...(options.effort ? { effort: options.effort } : {}) });
   const met = /meets the goal: (.+)/u.exec(text);
   if (met) transcript.write({ type: "attachment", attachment: { type: "goal_status", met: true, condition: met[1] } });
   // Streamed assistant messages never carry the stop reason (only the transcript does).
@@ -466,7 +467,10 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
       return record("setModel")(model);
     },
     setPermissionMode: (mode: string) => { options.permissionMode = settle(mode); return record("setPermissionMode")(mode); },
-    applyFlagSettings: record("applyFlagSettings"),
+    applyFlagSettings: (settings: Message) => {
+      if ("effortLevel" in settings) options.effort = settings.effortLevel ?? undefined;
+      return record("applyFlagSettings")(settings);
+    },
     stopTask: record("stopTask"),
     close: () => { closed = true; fakeClaude.calls.push({ method: "close", args: [sessionId] }); void iterator.return(undefined); },
   });

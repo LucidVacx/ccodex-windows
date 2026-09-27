@@ -1,4 +1,5 @@
 /** Owns the constant-memory reduction of native transcript records into thread header fields. */
+import { DELEGATION_OFF, DELEGATION_ON } from "../delegation.js";
 import { isChainRecord, type TranscriptRecord, type UserRecord } from "./records.js";
 
 export interface TranscriptHeader {
@@ -35,6 +36,8 @@ export interface TranscriptSummaryState extends TranscriptHeader {
   /** Cross-session messages (`msg_id`) the session sent (its SendMessage results) and got (peer records). */
   readonly sentMessages: readonly string[];
   readonly receivedMessages: readonly string[];
+  /** Proactive delegation (CCodex's `ultra` effort) as its mode message last told Claude. */
+  readonly delegating: boolean;
 }
 
 export function timestampSeconds(timestamp: string | undefined): number | null {
@@ -76,9 +79,11 @@ export function startsTurn(record: UserRecord, subagentPromptUuid?: string): boo
   // The SDK's setModel records a model switch as `/model <name>`: a setting, not a turn; so is clearing a goal.
   if (command) return !/^\/(?:model(?:\s|$)|goal clear$)/u.test(command);
   return !/<command-name>|<command-message>|<command-args>|<local-command-[^>]*>|<task-notification>/u.test(text)
-    && !text.startsWith("[Injected model-visible history]")
+    && !text.startsWith(INJECTED)
     && !/^\[Request interrupted by user(?: for tool use)?\]$/u.test(text);
 }
+
+const INJECTED = "[Injected model-visible history]";
 
 const EMPTY_STATE: TranscriptSummaryState = {
   cwd: "/",
@@ -98,6 +103,7 @@ const EMPTY_STATE: TranscriptSummaryState = {
   hasFirstPrompt: false,
   sentMessages: [],
   receivedMessages: [],
+  delegating: false,
 };
 
 function serviceTier(record: TranscriptRecord): string | null {
@@ -138,6 +144,11 @@ export class TranscriptSummarizer {
         this.state.hasFirstPrompt = true;
       }
       if (record.permissionMode !== undefined) this.state.permissionMode = record.permissionMode;
+      if (record.origin === undefined && !hasToolResult(record)) {
+        const text = userText(record);
+        if (text === `${INJECTED}\n${DELEGATION_ON}`) this.state.delegating = true;
+        else if (text === `${INJECTED}\n${DELEGATION_OFF}`) this.state.delegating = false;
+      }
       const sent = record.toolUseResult?.msg_id;
       if (typeof sent === "string") this.state.sentMessages = [...this.state.sentMessages, sent];
       const received = record.origin?.kind === "peer" ? record.origin.msg_id : undefined;
