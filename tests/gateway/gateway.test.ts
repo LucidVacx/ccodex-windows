@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -368,6 +368,23 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.turn(threadId, "two");
     const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
     expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two"]);
+  });
+
+  it("refuses a Claude turn while another live Claude process has the chat open (a stale registry entry does not count)", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one");
+    const sessions = join(process.env.CLAUDE_CONFIG_DIR!, "sessions");
+    mkdirSync(sessions, { recursive: true });
+    const register = (pid: number) => writeFileSync(join(sessions, `${pid}.json`), JSON.stringify({ pid, sessionId: threadId }));
+    register(2 ** 22 + 1);
+    await client.turn(threadId, "two");
+    register(process.ppid);
+    await expect(client.request("turn/start", { threadId, input: text("three") }))
+      .rejects.toThrow(`This chat is open in another Claude process (pid ${process.ppid})`);
+    rmSync(join(sessions, `${process.ppid}.json`));
+    await client.turn(threadId, "four");
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two", "user:four", "agent:claude: four"]);
   });
 
   it("keeps a Claude model switch out of the thread's history", async () => {

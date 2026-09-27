@@ -7,6 +7,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeHome } from "../config.js";
 import type { ThreadItem } from "../protocol/codex.js";
+import { parentPid } from "./processes.js";
 
 /** Which sessions sent and got cross-session messages (`msg_id`), as their transcripts tell. */
 export interface PeerDirectory {
@@ -50,18 +51,27 @@ export function peerOrigin(origin: unknown): Fields | undefined {
 }
 
 /** Claude's registry of running sessions (`~/.claude/sessions/<pid>.json`); an entry goes when its process exits. */
-function runningSession(home: string, match: (session: Fields) => boolean): string | undefined {
+function runningSession(home: string, match: (session: Fields) => boolean): Fields | undefined {
   try {
     const directory = join(home, "sessions");
     for (const name of readdirSync(directory)) {
       if (!name.endsWith(".json")) continue;
       try {
         const session = fields(JSON.parse(readFileSync(join(directory, name), "utf8")));
-        if (session && match(session)) return text(session.sessionId);
+        if (session && match(session)) return session;
       } catch {}
     }
   } catch {}
   return undefined;
+}
+
+/** A live Claude process that has the session open and is not ours (the claude CLI, another app): its pid. */
+export function foreignOwner(home: string, sessionId: string): number | undefined {
+  const owner = runningSession(home, (session) => {
+    const parent = session.sessionId === sessionId ? parentPid(Number(session.pid)) : undefined;
+    return parent !== undefined && parent !== process.pid;
+  });
+  return owner && Number(owner.pid);
 }
 
 function thread(peers: Peers, sessionId: string | undefined): string | undefined {
@@ -77,9 +87,9 @@ export function peerSource(origin: Fields, peers: Peers): string | undefined {
   const procStart = text(origin.verifiedPeerProcStart);
   const name = text(origin.name);
   return thread(peers, msgId && peers.directory.sender(msgId))
-    ?? thread(peers, runningSession(peers.home ?? claudeHome(), (session) => pid !== undefined
+    ?? thread(peers, text(runningSession(peers.home ?? claudeHome(), (session) => pid !== undefined
       ? text(session.pid) === pid && (!procStart || !session.procStart || text(session.procStart) === procStart)
-      : name !== undefined && session.name === name));
+      : name !== undefined && session.name === name)?.sessionId));
 }
 
 /** One message, whether read from its record or from the result of the turn it started. */
@@ -125,8 +135,8 @@ export function sentMessageItem(item: ThreadItem, input: Fields, result: Fields 
   // `to` names a session as ListAgents lists it ("work-8c", "work-8c [5bc12a]"), or (a reply) the address it wrote from.
   const name = to?.replace(/\s*\[[^\]]*\]$/u, "");
   const target = thread(peers, msgId && peers.directory.receiver(msgId))
-    ?? thread(peers, name && runningSession(peers.home ?? claudeHome(), (session) =>
-      session.name === name || session.sessionId === name || `uds:${text(session.messagingSocketPath)}` === name));
+    ?? thread(peers, name && text(runningSession(peers.home ?? claudeHome(), (session) =>
+      session.name === name || session.sessionId === name || `uds:${text(session.messagingSocketPath)}` === name)?.sessionId));
   if (!target) return item;
   return {
     type: "dynamicToolCall", id: item.id, namespace: "codex_app", tool: "send_message_to_thread",

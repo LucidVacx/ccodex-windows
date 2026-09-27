@@ -68,6 +68,20 @@ export function sessionProcesses(): SessionProcess[] {
   });
 }
 
+/** The parent of a running process; undefined once it is gone. */
+export function parentPid(pid: number): number | undefined {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+  } catch {
+    try {
+      return Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).trim()) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
 /** SIGTERM now, SIGKILL whatever is left a moment later. */
 export function killProcesses(pids: readonly number[]): void {
   const signal = (name: NodeJS.Signals) => {

@@ -17,7 +17,7 @@ import { completedToolItem } from "./native/projector.js";
 import { ANSWER_CHARS, assistantBlockItemId, continuationTurnId } from "./native/ids.js";
 import { readTranscriptRecords, type UserRecord } from "./native/records.js";
 import { userText } from "./native/summary.js";
-import { peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
+import { foreignOwner, peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
 import { baseOptions } from "./sdk.js";
 import { endedBackground, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
 import type { ClaudeThreads } from "./threads.js";
@@ -365,6 +365,9 @@ export class ClaudeSession {
   // ---- inputs ----
 
   public async startTurn(params: JsonObject): Promise<Turn> {
+    // Two processes writing one transcript fork it: whatever the other one writes next is lost to the chat.
+    const owner = this.turn ? undefined : foreignOwner(this.host.config.claudeHome, this.threadId);
+    if (owner) throw invalidRequest(`This chat is open in another Claude process (pid ${owner}): close it there or wait until it ends.`);
     const input = normalizeUserInput(params.input ?? []);
     const uuid: string = params.turnId ?? randomUUID();
     await this.applyTurnSettings(params);
