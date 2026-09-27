@@ -12,8 +12,6 @@ const COMMANDS = new Set(["cc", "ccstatus", "ccodex", "ccstate"]);
 const SKILL = "ccodex:status";
 /** What Desktop sends for the picked skill. */
 const SKILL_CHIP = /^\[\$ccodex:status\]\([^)]*\)$/u;
-/** A status turn's id, naming the chat's newest real turn before it (if any). */
-const STATUS_TURN = /^ccodex-[0-9a-f-]{36}(?:-after-(.+))?$/u;
 
 /**
  * The command as a skill, so the App's `/` menu offers it: "CCodex status" comes first for `/cc`, `/ccodex`,
@@ -35,6 +33,11 @@ export async function statusSkill(dataDir: string): Promise<JsonObject> {
 }
 
 /** `/cc` (or `/ccstatus`, `/ccodex`, `/ccstate`, `ccodex:status`, with `/`, `$` or nothing before, or the skill): CCodex's status of this chat. */
+/** A status answer's turn (not part of the chat: nothing forks or edits from it). */
+export function isStatusTurn(turnId: unknown): boolean {
+  return typeof turnId === "string" && turnId.startsWith("ccodex-");
+}
+
 export function isStatusCommand(params: JsonObject): boolean {
   const input: JsonObject[] = params.input ?? [];
   // A skill picked in Desktop comes as its chip, or as `$ccodex:status` text plus the skill item.
@@ -44,12 +47,6 @@ export function isStatusCommand(params: JsonObject): boolean {
     const word = text.toLowerCase().replace(/^[/$]/u, "");
     return COMMANDS.has(word) || word === SKILL || SKILL_CHIP.test(text);
   });
-}
-
-/** For a status turn's id, the chat's newest real turn before it (null: none); undefined for any other id. */
-export function turnBeforeStatus(turnId: unknown): string | null | undefined {
-  const match = STATUS_TURN.exec(String(turnId));
-  return match ? match[1] ?? null : undefined;
 }
 
 interface Window {
@@ -165,17 +162,12 @@ export async function statusCommand(gateway: Gateway, connection: Connection, me
     setImmediate(() => void answer(gateway, connection, threadId, params.expectedTurnId, id, params));
     return { turnId: params.expectedTurnId };
   }
-  // Its id names the chat's newest real turn: a fork from it ("Fork chat from here") forks there. A chat before its first
-  // turn has none to list (stock refuses to).
-  const newest = await gateway.threadRequest(connection, "thread/turns/list", { threadId, limit: 1, sortDirection: "desc" })
-    .catch(() => ({ data: [] })) as JsonObject;
-  const turnId = newest.data[0] ? `${id}-after-${newest.data[0].id}` : id;
   const now = Math.floor(Date.now() / 1000);
-  const turn: Turn = { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: now, completedAt: null, durationMs: null };
+  const turn: Turn = { id, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: now, completedAt: null, durationMs: null };
   setImmediate(() => void (async () => {
     connection.notify("turn/started", { threadId, turn });
     connection.notify("thread/status/changed", { threadId, status: { type: "active", activeFlags: [] } });
-    await answer(gateway, connection, threadId, turnId, id, params);
+    await answer(gateway, connection, threadId, id, id, params);
     connection.notify("turn/completed", { threadId, turn: { ...turn, status: "completed", completedAt: Math.floor(Date.now() / 1000), durationMs: Date.now() - now * 1000 } });
     // Desktop keeps the thread spinning in the sidebar until the thread is idle again.
     connection.notify("thread/status/changed", { threadId, status: { type: "idle" } });

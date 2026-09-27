@@ -599,16 +599,12 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(answer.text).toBe("side: what did I say?");
   });
 
-  it("forks from a /cc answer at the chat's real turns up to it, Claude or GPT (the status turn exists only on the wire)", async () => {
+  it("refuses a fork or an edit from a /cc answer with a clear error (the status turn is not part of the chat)", async () => {
     for (const threadId of [await claudeThread(), await stockThread()]) {
-      // A status first in a chat has no turn before it (stock lists no turns before the first one).
-      await client.turn(threadId, "/cc");
       await client.turn(threadId, "apple");
       const { turn: status } = await client.turn(threadId, "/cc");
-      await client.turn(threadId, "banana");
-      const { thread: fork } = await client.request("thread/fork", { threadId, lastTurnId: status.id, threadSource: "user" });
-      const { thread } = await client.request("thread/read", { threadId: fork.id, includeTurns: true });
-      expect(itemsOf(thread.turns).filter((item: string) => item.startsWith("user:"))).toEqual(["user:apple"]);
+      await expect(client.request("thread/fork", { threadId, lastTurnId: status.id })).rejects.toThrow("CCodex status message");
+      await expect(client.request("thread/revert", { threadId, beforeTurnId: status.id })).rejects.toThrow("CCodex status message");
     }
   });
 

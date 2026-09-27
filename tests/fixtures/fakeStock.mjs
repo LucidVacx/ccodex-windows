@@ -11,8 +11,6 @@ const threads = new Map();
 const connections = new Set();
 /** Stock's server-owned order of the Pinned section. */
 const pinned = [];
-/** Threads with a rollout: stock writes one from a thread's first turn on. */
-const materialized = new Set();
 let clock = 1_790_000_000;
 
 const now = () => ++clock;
@@ -63,7 +61,6 @@ function runTurn(connection, thread, params) {
   const image = text.startsWith("draw ") ? [{ type: "imageGeneration", id: `ig_${randomUUID()}`, status: "completed", revisedPrompt: text.slice(5), result: "",
     savedPath: `/codex-home/generated_images/${thread.id}/ig.png` }] : [];
   thread.turns.push(turn);
-  materialized.add(thread.id);
   if (!thread.preview) thread.preview = text;
   // A title model that takes its time.
   const later = /<user_prompt>[\s\S]*slow/u.test(text) ? (run) => setTimeout(run, 2_000) : setImmediate;
@@ -132,7 +129,6 @@ const handlers = {
   "thread/search": () => ({ data: [], nextCursor: null, backwardsCursor: null }),
   "thread/turns/list": (_connection, params) => {
     const turns = [...threads.get(params.threadId).turns];
-    if (!turns.length && !materialized.has(params.threadId)) throw Object.assign(new Error(`thread ${params.threadId} is not materialized yet; thread/turns/list is unavailable before first user message`), { code: -32600 });
     if (params.sortDirection !== "asc") turns.reverse();
     return stockPage(turns, params);
   },
@@ -144,11 +140,7 @@ const handlers = {
   "thread/fork": (connection, params) => {
     const source = threads.get(params.threadId);
     let turns = source.turns;
-    if (params.lastTurnId) {
-      const last = turns.findIndex((turn) => turn.id === params.lastTurnId);
-      if (last < 0) throw Object.assign(new Error(`lastTurnId '${params.lastTurnId}' was not found in the source thread`), { code: -32600 });
-      turns = turns.slice(0, last + 1);
-    }
+    if (params.lastTurnId) turns = turns.slice(0, turns.findIndex((turn) => turn.id === params.lastTurnId) + 1);
     if (params.beforeTurnId) turns = turns.slice(0, turns.findIndex((turn) => turn.id === params.beforeTurnId));
     const thread = newThread({ ...source, ephemeral: params.ephemeral }, { forkedFromId: source.id, turns: structuredClone(turns), preview: source.preview });
     thread.subscribers = new Set([connection]);
