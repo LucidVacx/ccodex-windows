@@ -328,7 +328,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     // Plan mode shows the chat's own permissions, like stock's.
     expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings).toMatchObject({ approvalPolicy: "never", collaborationMode: { mode: "plan" } });
     const meta = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8"));
-    expect(meta.planPermissions).toEqual({ [threadId]: "bypassPermissions" });
+    expect(meta.plans).toEqual({ [threadId]: { permissionMode: "bypassPermissions", model: "claude-opus-5-5" } });
     await gateway.stop();
     gateway = await startTestGateway({}, meta);
     client = await gateway.connect();
@@ -338,7 +338,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.turn(threadId, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag; this needs approval", { collaborationMode: mode("default") });
     expect(fakeClaude.options.at(-1)!.permissionMode).toBe("bypassPermissions");
     expect(asked).toEqual([]);
-    expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).planPermissions).toEqual({});
+    expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).plans).toEqual({});
   });
 
   it("keeps a Haiku chat on Haiku after a restart in plan mode (Claude plans it on Sonnet and records only that)", async () => {

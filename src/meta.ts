@@ -10,6 +10,11 @@ export interface Segment {
   readonly lastTurnId: string | null;
 }
 
+export interface Plan {
+  readonly permissionMode: string;
+  readonly model: string | null;
+}
+
 export interface MetaData {
   /**
    * Threads that switched provider: public id → segments, oldest first. The public id is one of the segments
@@ -25,10 +30,9 @@ export interface MetaData {
   /** Default model, effort and speed the App picked while its default model is a Claude one, by config key (never
    *  written to Codex's config.toml). */
   claudeDefaults?: Record<string, unknown> | null;
-  /** Permission mode of Claude chats in plan mode: Claude runs them in its own plan mode and records only that. */
-  planPermissions?: Record<string, string>;
-  /** Model of Claude chats in plan mode: Claude plans a Haiku chat on Sonnet and records only that. */
-  planModels?: Record<string, string>;
+  /** Claude chats in plan mode: their permission mode and model (Claude records only its plan mode, and plans a Haiku
+   *  chat on Sonnet). */
+  plans?: Record<string, Plan>;
   /** Paused goals of Claude chats: Claude's `/goal` has no pause, so pausing clears it there and keeps it here. */
   pausedGoals?: Record<string, { objective: string; createdAt: number; updatedAt: number }>;
 }
@@ -46,7 +50,7 @@ export class Meta {
     const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Partial<MetaData> : {};
     this.data = {
       lineages: raw.lineages ?? {}, archived: raw.archived ?? [], sections: raw.sections ?? {},
-      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, planPermissions: raw.planPermissions ?? {}, planModels: raw.planModels ?? {}, pausedGoals: raw.pausedGoals ?? {},
+      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, plans: raw.plans ?? {}, pausedGoals: raw.pausedGoals ?? {},
     };
     this.reindex();
   }
@@ -132,17 +136,13 @@ export class Meta {
     this.save();
   }
 
-  public planPermission(threadId: string): string | undefined { return this.data.planPermissions![threadId]; }
-
-  public planModel(threadId: string): string | undefined { return this.data.planModels![threadId]; }
+  public plan(threadId: string): Plan | undefined { return this.data.plans![threadId]; }
 
   /** A Claude chat's permission mode and model while it is in plan mode; null once it left plan mode. */
-  public setPlan(threadId: string, plan: { permissionMode: string; model: string | null } | null): void {
-    if (this.data.planPermissions![threadId] === plan?.permissionMode && this.data.planModels![threadId] === (plan?.model ?? undefined)) return;
-    delete this.data.planPermissions![threadId];
-    delete this.data.planModels![threadId];
-    if (plan) this.data.planPermissions![threadId] = plan.permissionMode;
-    if (plan?.model) this.data.planModels![threadId] = plan.model;
+  public setPlan(threadId: string, plan: Plan | null): void {
+    if (JSON.stringify(this.data.plans![threadId] ?? null) === JSON.stringify(plan)) return;
+    if (plan) this.data.plans![threadId] = plan;
+    else delete this.data.plans![threadId];
     this.save();
   }
 
@@ -160,8 +160,7 @@ export class Meta {
   public forget(threadId: string): void {
     this.data.archived = this.data.archived.filter((id) => id !== threadId);
     delete this.data.sections[threadId];
-    delete this.data.planPermissions![threadId];
-    delete this.data.planModels![threadId];
+    delete this.data.plans![threadId];
     delete this.data.pausedGoals![threadId];
     this.save();
   }

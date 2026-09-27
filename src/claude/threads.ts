@@ -57,7 +57,7 @@ const MAX_PROCESSES = Number(process.env.CCODEX_E2E_MAX_PROCESSES) || 10;
 /** A chat's permissions and plan mode from the mode its transcript last recorded (in plan mode, meta.json keeps its own). */
 function recordedPermissions(threadId: string, recorded: string | null | undefined, meta: Meta): Pick<SessionSettings, "permissionMode" | "plan"> {
   if (recorded !== "plan") return { permissionMode: (recorded ?? "default") as PermissionMode, plan: false };
-  return { permissionMode: (meta.planPermission(threadId) ?? "default") as PermissionMode, plan: true };
+  return { permissionMode: (meta.plan(threadId)?.permissionMode ?? "default") as PermissionMode, plan: true };
 }
 
 /** The Claude side of the gateway: catalog of native sessions, live sessions, side chats, models, skills. */
@@ -241,7 +241,7 @@ export class ClaudeThreads {
 
   /** A chat's model from its transcript; in plan mode meta.json's (Claude plans a Haiku chat on Sonnet, see Meta.setPlan). */
   private recordedModel(summary: SessionSummary): string | null {
-    const planned = summary.permissionMode === "plan" ? this.gateway.meta.planModel(summary.sessionId) : undefined;
+    const planned = summary.permissionMode === "plan" ? this.gateway.meta.plan(summary.sessionId)?.model : undefined;
     return planned ?? (summary.model && this.pickerModel(summary.model));
   }
 
