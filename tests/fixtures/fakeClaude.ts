@@ -387,8 +387,9 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   yield base(sessionId, { type: "stream_event", event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: reply } } });
   yield base(sessionId, { type: "stream_event", event: { type: "message_stop" } });
   const assistant = { type: "assistant", message: { id: messageId, role: "assistant", model, content: [{ type: "text", text: reply }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 3 } } };
-  // Like the CLI: the record names the effort the model ran at.
-  transcript.write({ ...assistant, apiBlockIndex: textIndex, ...(options.effort ? { effort: options.effort } : {}) });
+  // Like the CLI: the record names the effort the model ran at (unset: its own default; Haiku has none).
+  const effort = options.effort ?? (model.includes("haiku") ? undefined : "medium");
+  transcript.write({ ...assistant, apiBlockIndex: textIndex, ...(effort ? { effort } : {}) });
   const met = /meets the goal: (.+)/u.exec(text);
   if (met) transcript.write({ type: "attachment", attachment: { type: "goal_status", met: true, condition: met[1] } });
   // Streamed assistant messages never carry the stop reason (only the transcript does).

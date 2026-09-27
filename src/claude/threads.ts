@@ -62,10 +62,6 @@ function recordedPermissions(threadId: string, recorded: string | null | undefin
   return { permissionMode: (kept?.permissionMode ?? "default") as PermissionMode, plan: kept?.plan ?? true };
 }
 
-/** A chat's effort from its transcript: Claude records `ultra` as the max it runs at, told to delegate. */
-function recordedEffort(summary: SessionSummary): string | null {
-  return summary.delegating && summary.reasoningEffort === claudeEffort(ULTRA) ? ULTRA : summary.reasoningEffort;
-}
 
 /** The Claude side of the gateway: catalog of native sessions, live sessions, side chats, models, skills. */
 export class ClaudeThreads {
@@ -244,7 +240,7 @@ export class ClaudeThreads {
       ...summary,
       aiTitle: this.gateway.titles.naming(summary.sessionId) ? null : summary.aiTitle,
       model: session?.settings.model ?? this.recordedModel(summary),
-      reasoningEffort: session?.settings.effort ?? recordedEffort(summary),
+      reasoningEffort: session?.settings.effort ?? this.recordedEffort(summary),
     };
   }
 
@@ -252,6 +248,12 @@ export class ClaudeThreads {
   private recordedModel(summary: SessionSummary): string | null {
     const planned = summary.permissionMode === "plan" ? this.gateway.meta.plan(summary.sessionId)?.model : undefined;
     return planned ?? (summary.model && this.pickerModel(summary.model));
+  }
+
+  /** A chat's effort from its transcript (Claude records `ultra` as the max it runs at, told to delegate); in plan mode meta.json's. */
+  private recordedEffort(summary: SessionSummary): string | null {
+    if (summary.permissionMode === "plan") return this.gateway.meta.plan(summary.sessionId)?.effort ?? null;
+    return summary.delegating && summary.reasoningEffort === claudeEffort(ULTRA) ? ULTRA : summary.reasoningEffort;
   }
 
   /** Transcripts name the resolved model (`claude-haiku-4-5-…`); the picker (and a live session) its value (`haiku`). */
@@ -549,7 +551,7 @@ export class ClaudeThreads {
     return {
       cwd: summary?.cwd ?? process.cwd(),
       model: (summary && this.recordedModel(summary)) || this.defaultModel,
-      effort: summary ? recordedEffort(summary) : null,
+      effort: summary ? this.recordedEffort(summary) : null,
       fast: summary?.serviceTier === "fast",
       ...recordedPermissions(threadId, summary?.permissionMode, this.gateway.meta),
     };

@@ -231,7 +231,7 @@ export class ClaudeSession {
   private keepPlan(): void {
     const { meta } = this.host.gateway;
     if (this.settings.plan || meta.plan(this.threadId)) {
-      meta.setPlan(this.threadId, { permissionMode: this.settings.permissionMode, model: this.settings.model, plan: this.settings.plan });
+      meta.setPlan(this.threadId, { permissionMode: this.settings.permissionMode, model: this.settings.model, effort: this.settings.effort, plan: this.settings.plan });
     }
   }
 

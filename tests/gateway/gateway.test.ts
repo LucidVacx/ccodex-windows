@@ -328,7 +328,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     // Plan mode shows the chat's own permissions, like stock's.
     expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings).toMatchObject({ approvalPolicy: "never", collaborationMode: { mode: "plan" } });
     const meta = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8"));
-    expect(meta.plans).toEqual({ [threadId]: { permissionMode: "bypassPermissions", model: "claude-opus-5-5", plan: true } });
+    expect(meta.plans).toEqual({ [threadId]: { permissionMode: "bypassPermissions", model: "claude-opus-5-5", effort: null, plan: true } });
     await gateway.stop();
     gateway = await startTestGateway({}, meta);
     client = await gateway.connect();
@@ -351,8 +351,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await gateway.stop();
     gateway = await startTestGateway({}, meta);
     client = await gateway.connect();
-    expect((await client.request("thread/read", { threadId: thread.id })).thread.model).toBe(haiku);
-    expect(await client.request("thread/resume", { threadId: thread.id })).toMatchObject({ model: haiku });
+    expect((await client.request("thread/read", { threadId: thread.id })).thread).toMatchObject({ model: haiku, reasoningEffort: null });
+    expect(await client.request("thread/resume", { threadId: thread.id })).toMatchObject({ model: haiku, reasoningEffort: null });
     await client.turn(thread.id, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag", { collaborationMode: mode("default") });
     expect(fakeClaude.options.at(-1)!.model).toBe("claude-haiku-4-5-20251001");
   });
