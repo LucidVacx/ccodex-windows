@@ -17,7 +17,6 @@ import { completedToolItem } from "./native/projector.js";
 import { ANSWER_CHARS, assistantBlockItemId, continuationTurnId } from "./native/ids.js";
 import { readTranscriptRecords, type UserRecord } from "./native/records.js";
 import { userText } from "./native/summary.js";
-import { normalizeClaudeModelIdentifier } from "./modelSelection.js";
 import { peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
 import { baseOptions } from "./sdk.js";
 import { endedBackground, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
@@ -172,7 +171,6 @@ export class ClaudeSession {
   public queued: QueuedSubmissionLike[] = [];
   public totalUsage: TokenUsageBreakdown = EMPTY_USAGE;
   public lastUsage: TokenUsageBreakdown = EMPTY_USAGE;
-  public contextWindow: number | null = null;
   public costUsd = 0;
   public liveModel: string | null = null;
   private sdk?: Query;
@@ -1044,11 +1042,6 @@ export class ClaudeSession {
     const origin = peerOrigin(m.origin);
     if (origin) this.showPeer(this.turn.id, origin, "");
     this.costUsd += Number(m.total_cost_usd ?? 0);
-    for (const [model, usage] of Object.entries<any>(m.modelUsage ?? {})) {
-      if (usage?.contextWindow) this.host.contextWindows.set(normalizeClaudeModelIdentifier(model), Number(usage.contextWindow));
-    }
-    const windows = Object.values(m.modelUsage ?? {}).map((usage: any) => Number(usage?.contextWindow ?? 0)).filter(Boolean);
-    if (windows.length) this.contextWindow = Math.max(...windows);
     if (m.subtype !== "success" && !this.turn.interrupted) {
       const errors = Array.isArray(m.errors) ? m.errors.join("\n") : "";
       if (m.subtype === "error_during_execution" && !errors) this.turn.interrupted = true;
@@ -1065,7 +1058,7 @@ export class ClaudeSession {
     this.emit("thread/tokenUsage/updated", {
       threadId: this.threadId,
       turnId: this.turn.id,
-      tokenUsage: { total: this.totalUsage, last: this.lastUsage, modelContextWindow: this.contextWindow },
+      tokenUsage: { total: this.totalUsage, last: this.lastUsage, modelContextWindow: this.host.contextWindow(this.liveModel ?? this.settings.model) },
     });
   }
 

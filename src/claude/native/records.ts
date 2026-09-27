@@ -207,6 +207,23 @@ export function parseTranscriptLine(bytes: Buffer): TranscriptRecord | null | un
     const value: unknown = JSON.parse(line);
     return record(value) ? value : null;
   } catch {
+    return gluedRecord(line);
+  }
+}
+
+/**
+ * A write cut short (a full disk) leaves a partial record with the next one glued on. Inside JSON strings quotes are
+ * escaped, so `{"parentUuid":` starts a record: keep that one, linked to the lost record's parent so the chain holds.
+ */
+function gluedRecord(line: string): TranscriptRecord | undefined {
+  const start = line.lastIndexOf('{"parentUuid":');
+  if (start <= 0) return undefined;
+  try {
+    const value: unknown = JSON.parse(line.slice(start));
+    const lostParent = /^\{"parentUuid":(null|"[^"]*")/u.exec(line)?.[1];
+    if (!record(value)) return undefined;
+    return lostParent === undefined ? value : { ...value, parentUuid: JSON.parse(lostParent) } as TranscriptRecord;
+  } catch {
     return undefined;
   }
 }

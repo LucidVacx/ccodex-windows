@@ -72,6 +72,25 @@ describe("native Claude history selection", () => {
 });
 
 describe("native Claude record reader", () => {
+  it("keeps a record glued onto one cut short, linked past the lost record", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "ccodex-native-records-"));
+    const path = join(directory, "session.jsonl");
+    // Claude writes parentUuid first; a full disk cut the answer a2 short and the next record went onto its line.
+    const line = ({ parentUuid, ...rest }: UserRecord | AssistantRecord) => JSON.stringify({ parentUuid, ...rest });
+    const lost = line(assistant("a2", "a1", "m2", "cut short", 3));
+    await writeFile(path, [
+      line(user("u1", null, "first", 1)), line(assistant("a1", "u1", "m1", "answer", 2)),
+      `${lost.slice(0, lost.length / 2)}${line(user("u2", "a2", "next", 4))}`, line(assistant("a3", "u2", "m3", "reply", 5)),
+    ].join("\n") + "\n");
+    try {
+      const records: TranscriptRecord[] = [];
+      for await (const record of readTranscriptRecords(path)) records.push(record);
+      expect(selectHistory(records).records.map((record) => record.uuid)).toEqual(["u1", "a1", "u2", "a3"]);
+    } finally {
+      await rm(directory, { recursive: true });
+    }
+  });
+
   it("streams valid records and counts malformed or unsupported lines", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ccodex-native-records-"));
     const path = join(directory, "session.jsonl");

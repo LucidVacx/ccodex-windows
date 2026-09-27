@@ -405,12 +405,15 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
     }),
     askSideQuestion: (question: string) => Promise.resolve({ response: `side: ${question}` }),
     interrupt: record("interrupt"),
+    // Like Claude with CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000: Haiku's own window is smaller.
+    getContextUsage: () => Promise.resolve({ maxTokens: String(options.model).includes("haiku") ? 200_000 : 400_000 }),
     setModel: (model: string) => {
+      options.model = model;
+      if (options.persistSession === false) return record("setModel")(model);
       // Like the CLI: the switch lands in the transcript as a local `/model` command.
       transcript.write({ type: "user", isMeta: true, message: { role: "user", content: "<local-command-caveat>Caveat</local-command-caveat>" } });
       transcript.write({ type: "user", message: { role: "user", content: `<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>${model}</command-args>` } });
       transcript.write({ type: "user", message: { role: "user", content: `<local-command-stdout>Set model to ${model}</local-command-stdout>` } });
-      options.model = model;
       return record("setModel")(model);
     },
     setPermissionMode: (mode: string) => { options.permissionMode = settle(mode); return record("setPermissionMode")(mode); },

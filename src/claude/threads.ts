@@ -39,6 +39,8 @@ interface RateLimitWindow {
 
 /** Claude's standard context window, until a session of the model reports its own. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
+/** Claude's model entry plus the context window it reports for the model (kept in the models cache). */
+type ClaudeModel = ModelInfo & { contextWindow?: number };
 const WINDOW_MINUTES: Record<string, number> = { five_hour: 300, seven_day: 10_080, seven_day_opus: 10_080, seven_day_sonnet: 10_080 };
 
 /**
@@ -64,7 +66,7 @@ export class ClaudeThreads {
   /** Sub-agents spawned live, shown until Claude has written their transcript. */
   private readonly spawnedSubagents = new Map<string, Thread>();
   /** Context window of each Claude model, as its sessions report it. */
-  public readonly contextWindows = new Map<string, number>();
+  private readonly contextWindows = new Map<string, number>();
   /** Running sub-agents: their thread follows the transcript Claude writes (what was shown: item id → item). */
   private readonly liveSubagents = new Map<string, { turnId?: string; shown: Map<string, string>; size: number; poll: NodeJS.Timeout; refresh?: Promise<void> }>();
   private models_?: Promise<JsonObject[]>;
@@ -716,9 +718,9 @@ export class ClaudeThreads {
     return join(this.config.dataDir, "claude-models.json");
   }
 
-  private cachedModels(): ModelInfo[] | undefined {
+  private cachedModels(): ClaudeModel[] | undefined {
     try {
-      return JSON.parse(readFileSync(this.modelsPath, "utf8")) as ModelInfo[];
+      return JSON.parse(readFileSync(this.modelsPath, "utf8")) as ClaudeModel[];
     } catch {
       return undefined;
     }
@@ -726,19 +728,35 @@ export class ClaudeThreads {
 
   /** Asks Claude for its models and keeps them for the next start. */
   private async probeModels(): Promise<JsonObject[]> {
-    const models = await withProbeQuery(this.config, undefined, (probe) => probe.supportedModels());
+    const models = await withProbeQuery(this.config, undefined, async (probe) => {
+      const models: ClaudeModel[] = await probe.supportedModels();
+      // Claude's own context budget per model: its window, capped by settings such as CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+      for (const model of models) {
+        await probe.setModel(model.value);
+        model.contextWindow = (await probe.getContextUsage({ detail: "summary" })).maxTokens;
+      }
+      return models;
+    });
     const temporary = `${this.modelsPath}.${process.pid}.tmp`;
     void writeFile(temporary, JSON.stringify(models), { mode: 0o600 }).then(() => rename(temporary, this.modelsPath)).catch(() => undefined);
     return this.useModels(models);
   }
 
-  private useModels(models: ModelInfo[]): JsonObject[] {
+  private useModels(models: ClaudeModel[]): JsonObject[] {
     const resolved = models.find((model) => model.value === "default")?.resolvedModel;
     this.defaultModel = resolved ? normalizeClaudeModelIdentifier(resolved) : null;
     for (const model of models) {
       if (model.value !== "default" && model.resolvedModel) this.pickerValues.set(normalizeClaudeModelIdentifier(model.resolvedModel), modelCatalogValue(model));
+      if (!model.contextWindow) continue;
+      this.contextWindows.set(modelCatalogValue(model), model.contextWindow);
+      if (model.resolvedModel) this.contextWindows.set(normalizeClaudeModelIdentifier(model.resolvedModel), model.contextWindow);
     }
     return models.filter((model) => model.value !== "default").map((model) => mapClaudeModel(model, this.config.modelPrefix));
+  }
+
+  /** The context window Claude works with for a model (picker value or resolved id; none: the default model). */
+  public contextWindow(model: string | null | undefined): number {
+    return this.contextWindows.get(normalizeClaudeModelIdentifier(model || this.defaultModel || "")) ?? DEFAULT_CONTEXT_WINDOW;
   }
 
   public modelLabel(model: string | null): string {
@@ -1033,7 +1051,7 @@ export class ClaudeThreads {
     const { turns, usage } = await this.newestTurns(threadId, 1);
     // Like stock, the context meter follows a resume (Desktop's /status reads it).
     if (usage?.last) {
-      const modelContextWindow = this.contextWindows.get((thread.model ?? "").slice(this.config.modelPrefix.length)) ?? DEFAULT_CONTEXT_WINDOW;
+      const modelContextWindow = this.contextWindow(thread.model?.slice(this.config.modelPrefix.length));
       setImmediate(() => this.gateway.emit(threadId, "thread/tokenUsage/updated", { threadId, turnId: turns.at(-1)?.id ?? null, tokenUsage: { ...usage, modelContextWindow } }));
     }
     // A sub-agent has no session of its own: it shows the model and directory it runs with.
@@ -1201,7 +1219,7 @@ export class ClaudeThreads {
       actions: this.actions.get(threadId) ?? [],
       running: session?.busy ?? false,
       usage: session?.totalUsage,
-      contextWindow: session?.contextWindow ?? null,
+      contextWindow: this.contextWindow(session?.liveModel ?? settings.model),
       lastUsage: session?.lastUsage,
       costUsd: session?.costUsd ?? 0,
       backgroundTasks: session?.tasks.size ?? 0,
