@@ -1,7 +1,7 @@
 // E2E driver (runs inside the container): starts the gateway through the managed `codex` shim, talks to it like
 // Desktop over the control socket, and exercises every feature with real models. Results → /out/results.json.
 import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -812,8 +812,9 @@ const scenarios = {
     await daemon("start");
     client = await Client.connect();
     const meta = JSON.parse(readFileSync(join(HOME, ".ccodex", "state", "meta.json"), "utf8"));
-    const transcripts = new Set(readdirSync(join(HOME, ".claude", "projects"))
-      .flatMap((directory) => readdirSync(join(HOME, ".claude", "projects", directory))).map((file) => file.replace(/\.jsonl$/, "")));
+    const transcriptPaths = new Map(readdirSync(join(HOME, ".claude", "projects")).flatMap((directory) => readdirSync(join(HOME, ".claude", "projects", directory))
+      .filter((file) => file.endsWith(".jsonl")).map((file) => [file.slice(0, -6), join(HOME, ".claude", "projects", directory, file)])));
+    const transcripts = new Set(transcriptPaths.keys());
     const { DatabaseSync } = await import("node:sqlite");
     const stock = new DatabaseSync(join(HOME, ".codex", "state_5.sqlite"), { readOnly: true });
     const stockRow = (id) => stock.prepare("select archived from threads where id = ?").get(id);
@@ -859,42 +860,47 @@ const scenarios = {
       }
     }
     check(!problems.length, "migrated lineages list and read", problems);
-    // Every visible 0.4 Claude thread that still has a transcript is listed under its 0.4 id (lineage parts aside).
+    // Every visible 0.4 Claude thread that still has a transcript is listed under its session id (lineage parts aside);
+    // no 0.4 thread id is.
     const backends = new Set(lineages.flatMap(([, segments]) => segments.map((segment) => segment.threadId)));
     const state04 = new DatabaseSync("/mig/state04/state.sqlite", { readOnly: true });
-    const missing = state04.prepare(`select id, claude_session_id session from threads where deletion_pending = 0
-      and json_extract(thread_json, '$.parentThreadId') is null`).all()
-      .filter((thread) => {
-        const expected = meta.lineages[thread.id] ? thread.id : thread.session;
-        return transcripts.has(thread.session) && !(expected === thread.session && backends.has(expected)) && !rows.has(expected);
-      });
+    const threads04 = state04.prepare(`select id, claude_session_id session from threads where deletion_pending = 0
+      and json_extract(thread_json, '$.parentThreadId') is null`).all();
+    const missing = threads04.filter(({ session }) => transcripts.has(session) && !(backends.has(session) && !meta.lineages[session]) && !rows.has(session));
     check(!missing.length, "0.4 Claude threads listed", missing.slice(0, 20));
+    const oldIds = threads04.filter(({ id, session }) => id !== session && rows.has(id)).map(({ id }) => id);
+    check(!oldIds.length, "no 0.4 thread id is listed", oldIds.slice(0, 20));
     // 0.4 side chats (/btw forks) are no chats: only their sessions are there, archived.
     const sides = new DatabaseSync("/mig/state04/handoffs.sqlite", { readOnly: true }).prepare("select public_thread_id id from side_threads").all()
-      .map(({ id }) => ({ id, session: state04.prepare("select claude_session_id session from threads where id = ?").get(id)?.session }))
-      .filter(({ session }) => transcripts.has(session));
-    const listedSides = sides.filter(({ id, session }) => rows.has(id) || !rows.get(session)?.archived);
+      .map(({ id }) => threads04.find((thread) => thread.id === id)?.session).filter((session) => transcripts.has(session));
+    const listedSides = sides.filter((session) => !rows.get(session)?.archived);
     check(sides.length > 0 && !listedSides.length, "0.4 side chats are not listed", { sides: sides.length, listed: listedSides });
+    check(!existsSync(join(HOME, ".ccodex", "state", "state.sqlite")) && existsSync(join(HOME, ".ccodex.0.4-backup", "state.sqlite"))
+      && existsSync(join(HOME, ".ccodex.0.4-backup", "handoffs.sqlite")), "0.4's databases moved to ~/.ccodex.0.4-backup");
 
-    // A turn on the smallest migrated Claude thread keeps its 0.4 id.
-    const alias = readable.filter((entry) => entry.segments === 1).sort((a, b) => a.size - b.size)[0];
-    const { thread: before } = await client.request("thread/resume", { threadId: alias.publicId });
+    // Plain migrated Claude threads (no lineage), smallest first: a turn continues one.
+    const copied = new Set(readdirSync("/mig/claude/projects").flatMap((directory) => readdirSync(join("/mig/claude/projects", directory))).map((file) => file.replace(/\.jsonl$/, "")));
+    const plain = [...new Set(threads04.map(({ session }) => session))].filter((session) => rows.has(session) && !rows.get(session).archived && !backends.has(session))
+      .map((session) => ({ session, size: statSync(transcriptPaths.get(session)).size }))
+      .sort((a, b) => a.size - b.size);
+    const alias = plain.find(({ session }) => copied.has(session));
+    const { thread: before } = await client.request("thread/read", { threadId: alias.session, includeTurns: true });
+    await client.request("thread/resume", { threadId: alias.session });
     execFileSync("mkdir", ["-p", before.cwd]);
-    const reply = await client.turn(alias.publicId, "Reply with exactly: MIGRATED-OK", { model: state.haiku });
+    const reply = await client.turn(alias.session, "Reply with exactly: MIGRATED-OK", { model: state.haiku });
     check(reply.answers.some((answer) => answer.includes("MIGRATED-OK")), "turn on a migrated thread", reply.answers);
-    const { thread: after } = await client.request("thread/read", { threadId: alias.publicId, includeTurns: true });
-    check(after.turns.length === alias.turns + 1, "the turn is in its history", { before: alias.turns, after: after.turns.length });
+    const { thread: after } = await client.request("thread/read", { threadId: alias.session, includeTurns: true });
+    check(after.turns.length === before.turns.length + 1, "the turn is in its history", { before: before.turns.length, after: after.turns.length });
 
     // A thread whose transcript Claude had deleted is back as text, and Claude continues it knowing what was said.
-    const copied = new Set(readdirSync("/mig/claude/projects").flatMap((directory) => readdirSync(join("/mig/claude/projects", directory))).map((file) => file.replace(/\.jsonl$/, "")));
-    const restoredThreads = readable.filter((entry) => entry.segments === 1 && !copied.has(meta.lineages[entry.publicId][0].threadId));
+    const restoredThreads = plain.filter(({ session }) => !copied.has(session));
     check(restoredThreads.length > 0, "restored threads list and read", migrated.split("\n").filter((line) => line.startsWith("restored")));
-    const small = restoredThreads.sort((a, b) => a.size - b.size)[0];
-    await client.request("thread/resume", { threadId: small.publicId });
-    const { thread: old } = await client.request("thread/read", { threadId: small.publicId, includeTurns: true });
+    const small = restoredThreads[0].session;
+    await client.request("thread/resume", { threadId: small });
+    const { thread: old } = await client.request("thread/read", { threadId: small, includeTurns: true });
     const first = old.turns.flatMap((turn) => turn.items).find((item) => item.type === "userMessage").content[0].text.trim().slice(0, 40);
     execFileSync("mkdir", ["-p", old.cwd]);
-    const recall = await client.turn(small.publicId, "Quote verbatim the very first message I sent in this chat, nothing else.", { model: state.haiku });
+    const recall = await client.turn(small, "Quote verbatim the very first message I sent in this chat, nothing else.", { model: state.haiku });
     check(recall.answers.some((answer) => answer.includes(first.slice(0, 20))), "a restored thread continues with its history", { first, answers: recall.answers });
 
     client.close();
@@ -903,7 +909,7 @@ const scenarios = {
     const again = await list();
     const key = (map) => [...map.values()].map((thread) => `${thread.id}:${thread.archived}:${thread.name}`).sort().join("\n");
     check(key(again) === key(rows), "same list after restart", { before: rows.size, after: again.size });
-    return { restored: small.publicId, migrated: migrated.split("\n").filter((line) => !line.startsWith("fork ")), listed: rows.size, readable: readable.length, alias: alias.publicId, names: readable.filter((entry) => entry.name).length };
+    return { restored: small, migrated: migrated.split("\n").filter((line) => !line.startsWith("fork ")), listed: rows.size, readable: readable.length, alias: alias.session, sides: sides.length };
   },
 
   /**

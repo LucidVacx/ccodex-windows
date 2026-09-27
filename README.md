@@ -135,9 +135,11 @@ version takes over after `codex app-server daemon restart`.
 ### Upgrading from 0.4
 
 0.5 drops the 0.4 databases. `ccodex setup` (also when 0.4's setup hands over to 0.5)
-carries thread ids, provider-switch history, archive flags, sections and names over once,
-before it activates 0.5; a failed migration activates nothing. Claude chats whose
-transcripts Claude's 30-day cleanup deleted come back from 0.4's turns as text. Then:
+carries provider-switch history, archive flags, sections and names over once, before it
+activates 0.5; a failed migration activates nothing. Claude chats get their Claude session
+ids (links to 0.4 thread ids stop working); 0.4's `/btw` side chats are archived. Claude
+chats whose transcripts Claude's 30-day cleanup deleted come back from 0.4's turns as text.
+The 0.4 databases move to `~/.ccodex.0.4-backup`. Then:
 
 ```sh
 codex app-server daemon restart

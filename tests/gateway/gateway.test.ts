@@ -898,44 +898,10 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
   });
 });
 
-describe("threads migrated from 0.4", () => {
+describe("lineages Claude cleaned up", () => {
   afterEach(async () => { await gateway.stop(); });
 
-  it("keep their 0.4 id: listed, read, streamed and continued under it", async () => {
-    fakeClaude.reset();
-    const session = "0b0b0b0b-0000-4000-8000-000000000002";
-    const legacy = "0b0b0b0b-0000-4000-8000-00000000aaaa";
-    const directory = join(process.env.CLAUDE_CONFIG_DIR!, "projects", "-work");
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, `${session}.jsonl`), `${JSON.stringify({
-      type: "user", uuid: "m1", parentUuid: null, sessionId: session, cwd: "/work", timestamp: "2026-09-20T00:00:00.000Z",
-      origin: { kind: "human" }, message: { role: "user", content: "old question" },
-    })}\n`);
-    gateway = await startTestGateway({}, { lineages: { [legacy]: [{ provider: "claude", threadId: session, lastTurnId: null }] } });
-    client = await gateway.connect();
-    const ids = (await client.request("thread/list", { limit: 200 })).data.map((row: any) => row.id);
-    expect(ids).toContain(legacy);
-    expect(ids).not.toContain(session);
-    const done = await client.turn(legacy, "new question", { model: CLAUDE });
-    expect(done.threadId).toBe(legacy);
-    expect(fakeClaude.prompts.at(-1)).toMatchObject({ sessionId: session, text: "new question" });
-    expect(JSON.stringify(client.messages)).not.toContain(session);
-    const { thread } = await client.request("thread/read", { threadId: legacy, includeTurns: true });
-    expect(thread.id).toBe(legacy);
-    expect(itemsOf(thread.turns)).toEqual(["user:old question", "user:new question", "agent:claude: new question"]);
-    // Switching provider keeps the 0.4 id as the public one.
-    await client.request("turn/start", { threadId: legacy, model: "gpt-6-luna", input: text("to gpt") });
-    await client.waitFor("item/completed", (params) => params.threadId === legacy && params.item.text === "gpt: to gpt");
-    const switched = await client.request("thread/read", { threadId: legacy, includeTurns: true });
-    expect(itemsOf(switched.thread.turns)).toEqual(["user:old question", "user:new question", "agent:claude: new question", "contextCompaction", "user:to gpt", "agent:gpt: to gpt"]);
-    const rows = (await client.request("thread/list", { limit: 200 })).data.filter((row: any) => row.id === legacy);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ modelProvider: "openai", preview: "old question" });
-    await client.request("thread/archive", { threadId: legacy });
-    expect((await client.request("thread/list", { limit: 200, archived: true })).data.map((row: any) => row.id)).toContain(legacy);
-  });
-
-  it("stay listed and readable when Claude cleaned up the transcript of an earlier segment", async () => {
+  it("list a lineage whose own segment's transcript is gone under its oldest segment kept, pinned as before", async () => {
     fakeClaude.reset();
     const expired = "0c0c0c0c-0000-4000-8000-000000000001";
     const session = "0c0c0c0c-0000-4000-8000-000000000002";
@@ -945,15 +911,20 @@ describe("threads migrated from 0.4", () => {
       type: "user", uuid: "n1", parentUuid: null, sessionId: session, cwd: "/work", timestamp: "2026-09-20T00:00:00.000Z",
       origin: { kind: "human" }, message: { role: "user", content: "after the switch" },
     })}\n`);
-    gateway = await startTestGateway({}, { lineages: { [expired]: [
-      { provider: "claude", threadId: expired, lastTurnId: "gone" },
-      { provider: "claude", threadId: session, lastTurnId: null },
-    ] } });
+    gateway = await startTestGateway({}, {
+      lineages: { [expired]: [
+        { provider: "claude", threadId: expired, lastTurnId: "gone" },
+        { provider: "claude", threadId: session, lastTurnId: null },
+      ] },
+      sections: { [expired]: { sectionId: "section-pinned", enteredAt: 1 } },
+    });
     client = await gateway.connect();
     const ids = (await client.request("thread/list", { limit: 200 })).data.map((row: any) => row.id);
-    expect(ids).toContain(expired);
-    expect(ids).not.toContain(session);
-    const { thread } = await client.request("thread/read", { threadId: expired, includeTurns: true });
+    expect(ids).toContain(session);
+    expect(ids).not.toContain(expired);
+    const pinned = await client.request("thread/list", { limit: 50, sectionId: "section-pinned", sortKey: "section_position" });
+    expect(pinned.data.map((row: any) => row.id)).toEqual([session]);
+    const { thread } = await client.request("thread/read", { threadId: session, includeTurns: true });
     expect(itemsOf(thread.turns)).toEqual(["user:after the switch"]);
   });
 });

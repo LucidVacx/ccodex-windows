@@ -35,13 +35,6 @@ export function anchorCursor(key: CursorKey, cursor: string): AnchorCursor | und
   return undefined;
 }
 
-function legacyOffset(cursor: string, prefixes: readonly string[]): number | undefined {
-  const prefix = prefixes.find((candidate) => cursor.startsWith(candidate));
-  if (!prefix) return undefined;
-  const offset = Number(cursor.slice(prefix.length));
-  return Number.isInteger(offset) && offset >= 0 ? offset : undefined;
-}
-
 interface PageParams {
   cursor?: string | null;
   limit?: number | null;
@@ -55,7 +48,6 @@ function paginate<T>(
   key: CursorKey,
   idOf: (entry: T) => string,
   params: PageParams,
-  legacyPrefixes: readonly string[],
   defaultDirection: SortDirection,
   selected: (entry: T) => boolean = () => true,
 ): { data: T[]; nextCursor: string | null; backwardsCursor: string | null } {
@@ -65,6 +57,7 @@ function paginate<T>(
   if (direction === "desc") keyed.reverse();
   // Like stock, anchors are positions in the whole list; `selected` (e.g. a turn filter) applies on top.
   const anchor = params.cursor ? anchorCursor(key, params.cursor) : undefined;
+  if (params.cursor && !anchor) throw invalidRequest(`invalid cursor: ${params.cursor}`);
   if (anchor) {
     const anchorIndex = entries.findIndex((entry) => idOf(entry) === anchor.anchor);
     if (anchorIndex < 0) throw invalidRequest("invalid cursor: anchor is no longer present");
@@ -73,11 +66,6 @@ function paginate<T>(
       : anchor.includeAnchor ? index <= anchorIndex : index < anchorIndex);
   }
   keyed = keyed.filter(({ entry }) => selected(entry));
-  if (params.cursor && !anchor) {
-    const offset = legacyOffset(params.cursor, legacyPrefixes);
-    if (offset === undefined) throw invalidRequest(`invalid cursor: ${params.cursor}`);
-    keyed = keyed.slice(offset);
-  }
   const limit = Math.max(1, Math.min(params.limit ?? 25, 100));
   const page = keyed.slice(0, limit).map(({ entry }) => entry);
   return {
@@ -104,9 +92,8 @@ export function summaryItems(turn: Turn): ThreadItem[] {
 export function paginateTurns(
   turns: readonly Turn[],
   params: TurnsListParams,
-  legacyPrefixes: readonly string[] = [],
 ): Page<Turn> {
-  const page = paginate(turns, "turnId", (turn) => turn.id, params, legacyPrefixes, "desc");
+  const page = paginate(turns, "turnId", (turn) => turn.id, params, "desc");
   return { ...page, data: page.data.map((turn) => turnView(turn, params.itemsView)) };
 }
 
@@ -119,10 +106,9 @@ export function turnView(turn: Turn, itemsView: TurnsListParams["itemsView"]): T
 export function paginateItems(
   turns: readonly Turn[],
   params: ItemsListParams,
-  legacyPrefixes: readonly string[] = [],
 ): Page<{ turnId: string; item: ThreadItem }> {
   const entries = turns.flatMap((turn) => turn.items.map((item) => ({ turnId: turn.id, item })));
-  return paginate(entries, "itemId", (entry) => entry.item.id, params, legacyPrefixes, "asc",
+  return paginate(entries, "itemId", (entry) => entry.item.id, params, "asc",
     (entry) => !params.turnId || entry.turnId === params.turnId);
 }
 

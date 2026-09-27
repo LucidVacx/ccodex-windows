@@ -70,7 +70,7 @@ export class Catalog {
       if (section !== params.sectionId) return false;
     }
     if (params.projectId) return false;
-    if (params.parentThreadId && thread.parentThreadId !== meta.rowId(params.parentThreadId)) return false;
+    if (params.parentThreadId && thread.parentThreadId !== params.parentThreadId) return false;
     if (params.searchTerm) {
       const term = String(params.searchTerm).toLowerCase();
       if (!thread.name?.toLowerCase().includes(term)) return false;
@@ -79,8 +79,7 @@ export class Catalog {
   }
 
   private async claudeThreads(params: JsonObject): Promise<Thread[]> {
-    const publicAncestor: string | undefined = params.ancestorThreadId ?? params.parentThreadId ?? undefined;
-    const ancestor = publicAncestor && this.gateway.meta.rowId(publicAncestor);
+    const ancestor: string | undefined = params.ancestorThreadId ?? params.parentThreadId ?? undefined;
     const claude = this.gateway.claude;
     let threads = claude.threads();
     if (ancestor && claude.owns(ancestor)) threads = await claude.subagentThreads(ancestor);
@@ -244,17 +243,17 @@ export class Catalog {
   public async moveInSection(connection: Connection, params: JsonObject): Promise<JsonObject> {
     const { threadId, sectionId, beforeThreadId } = params as { threadId: string; sectionId: string | null; beforeThreadId?: string | null };
     const meta = this.gateway.meta;
-    const isClaude = (id: string) => this.gateway.claude.owns(meta.rowId(id));
+    const isClaude = (id: string) => this.gateway.claude.owns(id);
     const members = sectionId === null ? [] : (await this.list(connection, { sectionId, sortKey: "section_position", limit: 200, archived: false })).data as Thread[];
     const order = members.map((thread) => thread.id).filter((id) => id !== threadId);
-    if (!isClaude(threadId) && !order.some(isClaude)) return connection.upstream.request("thread/section/move", { ...params, threadId: meta.rowId(threadId) });
+    if (!isClaude(threadId) && !order.some(isClaude)) return connection.upstream.request("thread/section/move", params);
     const at = beforeThreadId ? order.indexOf(beforeThreadId) : -1;
     order.splice(at < 0 ? order.length : at, 0, threadId);
     if (isClaude(threadId)) {
-      meta.setSection(meta.rowId(threadId), sectionId);
+      meta.setSection(threadId, sectionId);
     } else {
       const next = order.slice(order.indexOf(threadId) + 1).find((id) => !isClaude(id));
-      await connection.upstream.request("thread/section/move", { threadId: meta.rowId(threadId), sectionId, beforeThreadId: next ? meta.rowId(next) : null });
+      await connection.upstream.request("thread/section/move", { threadId, sectionId, beforeThreadId: next ?? null });
     }
     if (sectionId) meta.setSectionOrder(sectionId, order);
     return {};

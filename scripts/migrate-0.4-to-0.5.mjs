@@ -2,18 +2,18 @@
 // One-off migration of CCodex 0.4 state (state.sqlite + handoffs.sqlite) to 0.5's meta.json. `ccodex setup` runs it
 // once, before it activates 0.5 (0.4's state.sqlite is there, meta.json is not). `--dry-run` only prints what it would do.
 //
-// - Every 0.4 Claude thread keeps its id: meta.lineages[<0.4 id>] = [{ claude, <session id> }].
-// - Provider-switch lineages become segment lists; forks whose 0.4 id was no backend move to their current backend.
+// - 0.4 thread ids go: a Claude thread is listed under its Claude session id, a provider-switch lineage (a segment
+//   list) under its first segment, a fork whose 0.4 id was no backend under its current backend.
 // - 0.4 side chats (/btw, full Claude forks) are no chats: their sessions are archived, without a 0.4 id.
 // - Archive flags, sections and section order of Claude threads carry over; names go into the transcripts.
 // - Claude threads whose transcript Claude's cleanup deleted (cleanupPeriodDays, 30 by default) get one back from the
 //   0.4 turns: prompts and answers as text, without tool calls, reasoning or compactions. Claude resumes it as such.
 // - A lineage is archived when its current backend was (0.4 archived sealed stock backends to hide them); 0.5 reads
 //   the flag from the row's backend, so that one is set to match, stock ones through `codex app-server`.
-// SQLite files are only read. meta.json is backed up before it is replaced.
+// SQLite files are only read, then moved to ~/.ccodex.0.4-backup. meta.json is backed up before it is replaced.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
@@ -104,6 +104,8 @@ function claudeTurnId(threadId, turnId) {
 }
 
 const lineages = {};
+/** 0.4 public id → the id 0.5 lists its lineage under. */
+const publicIds = new Map();
 const lineageBackends = new Set();
 let skipped = 0;
 if (handoffs) {
@@ -129,12 +131,13 @@ if (handoffs) {
         lastTurnId: last || !end ? null : claudeTurnId(epoch.backend_thread_id, end),
       };
     });
-    // 0.5 names a fork by its current backend; a lineage started from a thread keeps that thread's id.
+    // 0.5 names a fork by its current backend; a lineage started from a thread goes by that thread's backend.
     // Stock never lists threads without a user message of their own (0.4 made such forks); those take the current id.
     const unlisted = segments[0].provider === "codex"
       && stock.prepare("select first_user_message from threads where id = ?").get(segments[0].threadId)?.first_user_message === "";
-    const publicId = parts[0].epoch.backend_thread_id === task.public_thread_id && !unlisted ? task.public_thread_id : segments.at(-1).threadId;
-    if (publicId !== task.public_thread_id) log(`${unlisted ? "unlisted" : "fork"} ${task.public_thread_id} is now ${publicId}`);
+    const publicId = parts[0].epoch.backend_thread_id === task.public_thread_id && !unlisted ? segments[0].threadId : segments.at(-1).threadId;
+    if (publicId !== segments[0].threadId) log(`${unlisted ? "unlisted" : "fork"} ${task.public_thread_id} is now ${publicId}`);
+    publicIds.set(task.public_thread_id, publicId);
     if (segments.length === 1 && segments[0].threadId === publicId) continue;
     lineages[publicId] = segments;
   }
@@ -149,9 +152,6 @@ for (const thread of claudeThreads.values()) {
   if (sides.has(thread.id)) {
     archived.add(sessionId);
     continue;
-  }
-  if (!lineages[thread.id] && !lineageBackends.has(thread.id) && thread.id !== sessionId) {
-    lineages[thread.id] = [{ provider: "claude", threadId: sessionId, lastTurnId: null }];
   }
   if (thread.archived) archived.add(sessionId);
   if (thread.section) sections[sessionId] = { sectionId: JSON.parse(thread.section).id, enteredAt: thread.section_entered_at ?? thread.updated_at };
@@ -171,7 +171,7 @@ for (const { backend_thread_id: id } of handoffs?.prepare("select backend_thread
 
 const archived04 = new Set([...claudeThreads.values()].filter((thread) => thread.archived).map((thread) => thread.claude_session_id));
 for (const [publicId, segments] of Object.entries(lineages)) {
-  const row = segments.find((segment) => segment.threadId === publicId) ?? segments[0];
+  const row = segments.find((segment) => segment.threadId === publicId);
   const isArchived = (segment) => segment.provider === "codex"
     ? stock.prepare("select archived from threads where id = ?").get(segment.threadId)?.archived === 1
     : archived04.has(segment.threadId);
@@ -206,11 +206,9 @@ async function stockRequests(requests) {
   child.kill();
 }
 
-/** A 0.4 id as 0.5 lists it (the row's backend). */
+/** A 0.4 id as 0.5 lists it. */
 function rowId(id) {
-  const segments = lineages[id];
-  if (segments) return (segments.find((segment) => segment.threadId === id) ?? segments[0]).threadId;
-  return claudeThreads.get(id)?.claude_session_id ?? id;
+  return publicIds.get(id) ?? claudeThreads.get(id)?.claude_session_id ?? id;
 }
 // Older 0.4 states predate section orders.
 const sectionOrders = state.prepare("select 1 from sqlite_master where type = 'table' and name = 'section_orders'").get()
@@ -226,8 +224,7 @@ const meta = {
   leaves: existing.leaves ?? {},
 };
 
-const aliases = Object.values(lineages).filter((segments) => segments.length === 1).length;
-log(`lineages: ${Object.keys(lineages).length} (${aliases} kept 0.4 Claude ids, ${Object.keys(lineages).length - aliases} provider switches), skipped ${skipped}`);
+log(`lineages: ${Object.keys(lineages).length}, skipped ${skipped}`);
 log(`restored transcripts: ${restored.size}`);
 log(`archived: ${archived.size}, stock archive changes: ${stockArchives.length}, in sections: ${Object.keys(sections).length}, section orders: ${Object.keys(sectionOrder).length}, names to write: ${named.length}`);
 if (dryRun) {
@@ -246,4 +243,13 @@ for (const { sessionId, name } of named) {
 }
 // Claude lists sessions by their file's time: a restored one keeps its place.
 for (const [sessionId, { at }] of restored) utimesSync(transcripts.get(sessionId), at, at);
+// 0.4's databases go out of the way: nothing reads them, and setup migrates only while state.sqlite is there.
+state.close();
+handoffs?.close();
+const backup = `${home}.0.4-backup`;
+mkdirSync(backup, { recursive: true, mode: 0o700 });
+for (const name of readdirSync(stateDir).filter((name) => /^(state|handoffs)\.sqlite|^backups$|^cursor\.key$/.test(name))) {
+  renameSync(join(stateDir, name), join(backup, name));
+}
+log(`moved 0.4's databases to ${backup}`);
 log(`wrote ${metaPath}. Restart the gateway: codex app-server daemon restart`);

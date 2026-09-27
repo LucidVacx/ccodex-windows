@@ -29,7 +29,6 @@ describe("anchor pagination", () => {
       .toEqual(["i5"]);
     expect(paginateItems(turns, { turnId: "t3", sortDirection: "desc", limit: 10 }).data.map((entry) => entry.item.id))
       .toEqual(["i5", "i4", "i3"]);
-    expect(paginateItems(turns, { cursor: "hyb-item:4" }, ["hyb-item:"]).data.map((entry) => entry.item.id)).toEqual(["i5"]);
     expect(() => paginateItems(turns, { cursor: "hyb-item:4" })).toThrow("invalid cursor: hyb-item:4");
     expect(() => paginateItems(turns, { cursor: itemCursor("gone", true) })).toThrow("anchor is no longer present");
   });
@@ -44,8 +43,6 @@ describe("anchor pagination", () => {
     expect(perTurn("t1", "asc")).toEqual([]);
     expect(paginateItems(turns, { turnId: "t3", cursor: itemCursor("i2", false) }).data.map((entry) => entry.item.id))
       .toEqual(["i3", "i4", "i5"]);
-    expect(paginateItems(turns, { turnId: "t1", cursor: "hyb-item:1" }, ["hyb-item:"]).data.map((entry) => entry.item.id))
-      .toEqual(["i2"]);
   });
 
   it("pages turns newest-first by default and reports inclusive top-level cursors", () => {
