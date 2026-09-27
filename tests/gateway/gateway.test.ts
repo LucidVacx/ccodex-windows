@@ -930,6 +930,30 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns)).toEqual(["user:first", "agent:claude: first", "contextCompaction", "user:second, edited", "agent:gpt: second, edited"]);
   });
 
+  it("runs a message queued after gpt was picked during a Claude turn on gpt: it drains with the settings of the moment, like stock's queue", async () => {
+    const threadId = await claudeThread();
+    let approve!: (value: unknown) => void;
+    const asked = new Promise<void>((running) => {
+      client.onRequest = () => new Promise((resolve) => { approve = resolve; running(); });
+    });
+    await client.request("turn/start", { threadId, input: text("this needs approval") });
+    await asked;
+    await client.request("thread/settings/update", { threadId, model: "gpt-6-luna" });
+    await client.request("thread/queue/add", { threadId, input: text("queued"), clientUserMessageId: "c-queued" });
+    await client.request("thread/queue/add", { threadId, input: text("queued too"), clientUserMessageId: "c-queued-too" });
+    const before = client.notifications("turn/started", threadId).length;
+    approve({ decision: "accept" });
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && client.notifications("item/completed", threadId)
+      .some((message) => message.params.item.text === "gpt: queued too"));
+    const [queued] = client.notifications("turn/started", threadId).slice(before).map((message) => message.params.turn.id);
+    expect(client.notifications("item/completed", threadId).some((message) => message.params.item.type === "contextCompaction" && message.params.turnId === queued)).toBe(true);
+    expect(fakeClaude.prompts.map((prompt) => prompt.text)).not.toContain("queued");
+    expect(fakeClaude.prompts.map((prompt) => prompt.text)).not.toContain("queued too");
+    expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings.model).toBe("gpt-6-luna");
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(itemsOf(thread.turns)).toEqual(["user:this needs approval", "commandExecution", "agent:approval allow", "contextCompaction", "user:queued", "agent:gpt: queued", "user:queued too", "agent:gpt: queued too"]);
+  });
+
   // Like stock, every client with a chat open sees the turns another client runs there, and the model it picked.
   it.each([["gpt → claude", "gpt-6-luna", CLAUDE, "claude"], ["claude → gpt", CLAUDE, "gpt-6-luna", "gpt"]])(
     "shows a switch %s another client makes to every client with the chat open, and the model it switched to", async (_name, from, to, replier) => {

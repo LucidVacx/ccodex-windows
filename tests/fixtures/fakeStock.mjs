@@ -194,6 +194,11 @@ const handlers = {
     if (params.model) thread.model = params.model;
     return runTurn(connection, thread, params);
   },
+  // Its turns end at once: a queued message starts when stock would drain it, after the running turn.
+  "thread/queue/add": (connection, params) => {
+    runTurn(connection, threads.get(params.threadId), params);
+    return { queuedSubmission: { id: randomUUID(), input: params.input, clientUserMessageId: params.clientUserMessageId } };
+  },
   "threadSection/list": () => ({ data: [{ id: "section-pinned", name: "Pinned", appearance: null }], nextCursor: null }),
   "thread/section/move": (_connection, params) => {
     if (params.beforeThreadId && !pinned.includes(params.beforeThreadId)) {

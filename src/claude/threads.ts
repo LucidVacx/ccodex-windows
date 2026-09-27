@@ -1005,7 +1005,7 @@ export class ClaudeThreads {
         const session = this.session(threadId);
         const queuedSubmission = { id: randomUUID(), input: normalizeUserInput(params.input ?? []), clientUserMessageId: params.clientUserMessageId };
         if (session.busy && !session.waitingOnTasks) session.queued.push(queuedSubmission);
-        else await session.startTurn({ input: queuedSubmission.input, clientUserMessageId: queuedSubmission.clientUserMessageId });
+        else await this.gateway.lineages.startQueued(session, { input: queuedSubmission.input, clientUserMessageId: queuedSubmission.clientUserMessageId });
         this.gateway.emit(threadId, "thread/queue/changed", { threadId });
         return { queuedSubmission };
       }
@@ -1293,7 +1293,7 @@ export class ClaudeThreads {
         if (!entry) throw invalidRequest("nothing queued");
         changed();
         const turn = { input: entry.input, clientUserMessageId: entry.clientUserMessageId };
-        if (!session.busy) return { turn: await session.startTurn(turn) };
+        if (!session.busy) return this.gateway.lineages.startQueued(session, turn);
         await session.steer(turn);
         return { turn: startedTurn(session.liveTurn()!) };
       }
