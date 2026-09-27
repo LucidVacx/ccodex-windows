@@ -195,6 +195,7 @@ export class Catalog {
     const limit = Math.max(1, Math.min(Number(params.limit ?? 25), 100));
     const queryKey = JSON.stringify({ searchTerm, archived: params.archived, sourceKinds: params.sourceKinds, key, direction });
     const offset = decodeCursor(params.cursor, queryKey);
+    const claudeHits = this.gateway.claude.search(searchTerm);
     // Only as many stock results as this page needs (a full stock search takes seconds), in the client's pages.
     const stockResults: JsonObject[] = [];
     let cursor: string | null = null;
@@ -203,8 +204,17 @@ export class Catalog {
       stockResults.push(...page.data);
       cursor = page.nextCursor;
     } while (cursor && stockResults.length < offset + limit);
-    const claude = (await this.project(await this.claudeThreads({ archived: params.archived, sourceKinds: params.sourceKinds, searchTerm })))
-      .map((thread) => ({ thread, snippet: thread.name }));
+    // A switched thread's match in any of its backends is its row's.
+    const owners = new Map(Object.entries(this.gateway.meta.lineages).flatMap(([id, segments]) => segments.map((segment) => [segment.threadId, id] as const)));
+    const snippets = new Map<string, string>();
+    const add = (id: string, snippet: string) => {
+      const owner = owners.get(id) ?? id;
+      if (!snippets.has(owner)) snippets.set(owner, snippet);
+    };
+    for (const [id, snippet] of await claudeHits) add(id, snippet);
+    for (const result of stockResults) add(result.thread.id, result.snippet);
+    const claude = (await this.project(await this.claudeThreads({ archived: params.archived, sourceKinds: params.sourceKinds })))
+      .flatMap((thread) => snippets.has(thread.id) ? [{ thread, snippet: snippets.get(thread.id)! }] : []);
     const visible = stockResults.filter((result) => !this.gateway.lineages.isHidden(result.thread.id));
     let all = [...visible, ...claude].sort((left, right) =>
       direction * (Number(left.thread[key] ?? 0) - Number(right.thread[key] ?? 0)));

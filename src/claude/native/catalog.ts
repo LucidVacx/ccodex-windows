@@ -7,6 +7,7 @@ import type { PeerDirectory } from "../peers.js";
 import { TranscriptPages, type PageSource } from "./pages.js";
 import { projectTranscript, type TranscriptProjection } from "./projector.js";
 import { readTranscriptRecords } from "./records.js";
+import { searchTranscripts } from "./search.js";
 import {
   TranscriptSummarizer,
   type TranscriptHeader,
@@ -141,6 +142,12 @@ export class NativeSessionCatalog implements PeerDirectory {
   public receiver(msgId: string): string | undefined { return this.receivers.get(msgId); }
 
   public has(sessionId: string): boolean { return this.bySessionId.has(sessionId); }
+
+  /** Session id → snippet for the sessions whose visible messages hold `term` (see `searchTranscripts`). */
+  public async search(claudeBinary: string, term: string): Promise<Map<string, string>> {
+    const found = await searchTranscripts(claudeBinary, this.projectsDir, term);
+    return new Map(this.ordered.flatMap((summary) => found.has(summary.path) ? [[summary.sessionId, found.get(summary.path)!]] : []));
+  }
 
   public async projection(sessionId: string, leafUuid?: string): Promise<TranscriptProjection> {
     const entry = this.entriesBySessionId.get(sessionId);

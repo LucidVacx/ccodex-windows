@@ -690,17 +690,19 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(new Set((await listed()).filter((id) => !before.has(id)))).toEqual(new Set(publicIds));
   });
 
-  it("previews a Claude thread by the start of its first prompt and finds it by its title only", async () => {
+  it("previews a Claude thread by the start of its first prompt and searches its messages like stock", async () => {
     const threadId = await claudeThread();
-    const prompt = `needle ${"x".repeat(200)}`;
+    const prompt = `${"x ".repeat(40)}needle\n\n${"y".repeat(200)}`;
     await client.turn(threadId, prompt);
     await client.request("thread/name/set", { threadId, name: "Haystack title" });
     await new Promise((resolve) => setTimeout(resolve, 200));
     const row = (await client.request("thread/list", { limit: 200 })).data.find((thread: any) => thread.id === threadId);
     expect(row.preview).toBe(prompt.slice(0, 100));
-    const found = async (searchTerm: string) => (await client.request("thread/list", { limit: 200, searchTerm })).data.map((thread: any) => thread.id);
-    expect(await found("haystack")).toContain(threadId);
-    expect(await found("needle")).not.toContain(threadId);
+    const found = async (searchTerm: string) => (await client.request("thread/search", { searchTerm, limit: 50 })).data
+      .find((result: any) => result.thread.id === threadId)?.snippet;
+    // Stock's snippet: up to 60 characters around the match, whitespace collapsed; any case; names are not searched.
+    expect(await found("NEEDLE")).toBe(`...${"x ".repeat(30)}needle ${"y".repeat(59)}...`);
+    expect(await found("haystack")).toBeUndefined();
   });
 
   it("keeps a Claude thread's name through an edit of its only message", async () => {

@@ -228,6 +228,10 @@ export class ClaudeThreads {
   }
 
   /** Every native session as a list row (sub-agents excluded; they are listed through their parent). */
+  public search(term: string): Promise<Map<string, string>> {
+    return this.catalog.search(this.config.claudeBinary, term);
+  }
+
   public threads(): Thread[] {
     const rows = this.catalog.sessions().map((summary) =>
       this.decorate(nativeThread(summary.sessionId, this.headerOf(summary, this.sessions.get(summary.sessionId)), { status: this.status(summary.sessionId) })));

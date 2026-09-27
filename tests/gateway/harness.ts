@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import type { Config } from "../../src/config.js";
+import { bundledClaudeExecutable, type Config } from "../../src/config.js";
 import { startGateway, type GatewayServer } from "../../src/gateway/server.js";
 import { Logger } from "../../src/log.js";
 import { testConfig } from "../fixtures/config.js";
@@ -104,6 +104,8 @@ export async function startTestGateway(overrides: Partial<Config> = {}, meta?: o
   const root = mkdtempSync(join(tmpdir(), "ccodex-gw-"));
   const config = testConfig({
     codex: FAKE_STOCK,
+    // Its ripgrep searches Claude chats.
+    claudeBinary: bundledClaudeExecutable(),
     claudeHome: process.env.CLAUDE_CONFIG_DIR!,
     productHome: root,
     dataDir: join(root, "state"),
