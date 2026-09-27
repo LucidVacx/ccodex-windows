@@ -188,7 +188,9 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   }
   transcript.write({ type: "user", uuid, origin: { kind: "human" }, promptId: randomUUID(), permissionMode: options.permissionMode, message: { role: "user", content: prompt.message.content } });
   let reply = fakeClaude.reply(text);
-  const tool = (messageId: string, index: number, name: string, input: Message): Message => ({ type: "assistant", message: { id: messageId, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: `toolu_${randomUUID().slice(0, 8)}`, name, input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } }, apiBlockIndex: index });
+  // Like the CLI: a turn records the model it ran on, and plan mode runs a Haiku chat on Sonnet ("haiku plan upgrade").
+  const model = String(options.model).includes("haiku") ? options.permissionMode === "plan" ? "claude-sonnet-5" : "claude-haiku-4-5-20251001" : "claude-opus-5-5";
+  const tool = (messageId: string, index: number, name: string, input: Message): Message => ({ type: "assistant", message: { id: messageId, role: "assistant", model, content: [{ type: "tool_use", id: `toolu_${randomUUID().slice(0, 8)}`, name, input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } }, apiBlockIndex: index });
   const toolResult = function* (call: Message, output: string, result: Message = { stdout: output, stderr: "" }): Generator<Message> {
     const content = [{ type: "tool_result", tool_use_id: call.message.content[0].id, content: output }];
     transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: result });
@@ -269,7 +271,7 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     // Like the CLI: leaving plan mode asks for permission; allowed, the chat goes back to the mode it had before.
     const toolUseId = `toolu_${randomUUID().slice(0, 8)}`;
     const input = { plan: proposed[1]!, planFilePath: "/home/fake/.claude/plans/plan.md" };
-    const tool = { type: "assistant", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: toolUseId, name: "ExitPlanMode", input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } } };
+    const tool = { type: "assistant", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model, content: [{ type: "tool_use", id: toolUseId, name: "ExitPlanMode", input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } } };
     transcript.write({ ...tool, apiBlockIndex: 0 });
     yield base(sessionId, tool);
     const decision = await options.canUseTool("ExitPlanMode", input, { toolUseID: toolUseId, signal: new AbortController().signal, suggestions: [] });
@@ -368,14 +370,14 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   if (thought !== undefined) {
     yield base(sessionId, { type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } } });
     if (thought) yield base(sessionId, { type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: thought } } });
-    const thinking = { type: "assistant", message: { id: messageId, role: "assistant", model: "claude-opus-5-5", content: [{ type: "thinking", thinking: thought, signature: "sig" }], stop_reason: null, usage: { input_tokens: 10, output_tokens: 3 } } };
+    const thinking = { type: "assistant", message: { id: messageId, role: "assistant", model, content: [{ type: "thinking", thinking: thought, signature: "sig" }], stop_reason: null, usage: { input_tokens: 10, output_tokens: 3 } } };
     transcript.write({ ...thinking, apiBlockIndex: 0 });
     yield base(sessionId, thinking);
   }
   yield base(sessionId, { type: "stream_event", event: { type: "content_block_start", index: textIndex, content_block: { type: "text", text: "" } } });
   yield base(sessionId, { type: "stream_event", event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: reply } } });
   yield base(sessionId, { type: "stream_event", event: { type: "message_stop" } });
-  const assistant = { type: "assistant", message: { id: messageId, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: reply }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 3 } } };
+  const assistant = { type: "assistant", message: { id: messageId, role: "assistant", model, content: [{ type: "text", text: reply }], stop_reason: "end_turn", usage: { input_tokens: 10, output_tokens: 3 } } };
   transcript.write({ ...assistant, apiBlockIndex: textIndex });
   const met = /meets the goal: (.+)/u.exec(text);
   if (met) transcript.write({ type: "attachment", attachment: { type: "goal_status", met: true, condition: met[1] } });

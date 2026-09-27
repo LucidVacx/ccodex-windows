@@ -221,12 +221,12 @@ export class ClaudeSession {
   ) {
     this.exists = options.exists;
     this.resumeAt = options.resumeAt;
-    this.keepPlanPermission();
+    this.keepPlan();
   }
 
-  /** Claude's transcript records only its plan mode: the chat's own permissions wait in meta.json meanwhile. */
-  private keepPlanPermission(): void {
-    this.host.gateway.meta.setPlanPermission(this.threadId, this.settings.plan ? this.settings.permissionMode : null);
+  /** Claude's transcript records only its plan mode and the model it plans on: the chat's own wait in meta.json meanwhile. */
+  private keepPlan(): void {
+    this.host.gateway.meta.setPlan(this.threadId, this.settings.plan ? { permissionMode: this.settings.permissionMode, model: this.settings.model } : null);
   }
 
   private resumeAt: string | undefined;
@@ -515,7 +515,7 @@ export class ClaudeSession {
     if (!changed) return;
     const previous = this.settings;
     this.settings = next;
-    this.keepPlanPermission();
+    this.keepPlan();
     // Like stock, every client with the chat open learns the change (Desktop's composer follows it).
     this.emit("thread/settings/updated", { threadId: this.threadId, threadSettings: this.host.threadSettings(next) });
     if (this.sdk) {

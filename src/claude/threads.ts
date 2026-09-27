@@ -234,9 +234,15 @@ export class ClaudeThreads {
     return {
       ...summary,
       aiTitle: this.gateway.titles.naming(summary.sessionId) ? null : summary.aiTitle,
-      model: session?.settings.model ?? (summary.model && this.pickerModel(summary.model)),
+      model: session?.settings.model ?? this.recordedModel(summary),
       reasoningEffort: session?.settings.effort ?? summary.reasoningEffort,
     };
+  }
+
+  /** A chat's model from its transcript; in plan mode meta.json's (Claude plans a Haiku chat on Sonnet, see Meta.setPlan). */
+  private recordedModel(summary: SessionSummary): string | null {
+    const planned = summary.permissionMode === "plan" ? this.gateway.meta.planModel(summary.sessionId) : undefined;
+    return planned ?? (summary.model && this.pickerModel(summary.model));
   }
 
   /** Transcripts name the resolved model (`claude-haiku-4-5-…`); the picker (and a live session) its value (`haiku`). */
@@ -533,7 +539,7 @@ export class ClaudeThreads {
     const summary = this.catalog.get(threadId);
     return {
       cwd: summary?.cwd ?? process.cwd(),
-      model: summary?.model ? this.pickerModel(summary.model) : this.defaultModel,
+      model: (summary && this.recordedModel(summary)) || this.defaultModel,
       effort: summary?.reasoningEffort ?? null,
       fast: summary?.serviceTier === "fast",
       ...recordedPermissions(threadId, summary?.permissionMode, this.gateway.meta),

@@ -27,6 +27,8 @@ export interface MetaData {
   claudeDefaults?: Record<string, unknown> | null;
   /** Permission mode of Claude chats in plan mode: Claude runs them in its own plan mode and records only that. */
   planPermissions?: Record<string, string>;
+  /** Model of Claude chats in plan mode: Claude plans a Haiku chat on Sonnet and records only that. */
+  planModels?: Record<string, string>;
   /** Paused goals of Claude chats: Claude's `/goal` has no pause, so pausing clears it there and keeps it here. */
   pausedGoals?: Record<string, { objective: string; createdAt: number; updatedAt: number }>;
 }
@@ -44,7 +46,7 @@ export class Meta {
     const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Partial<MetaData> : {};
     this.data = {
       lineages: raw.lineages ?? {}, archived: raw.archived ?? [], sections: raw.sections ?? {},
-      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, planPermissions: raw.planPermissions ?? {}, pausedGoals: raw.pausedGoals ?? {},
+      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, planPermissions: raw.planPermissions ?? {}, planModels: raw.planModels ?? {}, pausedGoals: raw.pausedGoals ?? {},
     };
     this.reindex();
   }
@@ -132,11 +134,15 @@ export class Meta {
 
   public planPermission(threadId: string): string | undefined { return this.data.planPermissions![threadId]; }
 
-  /** A Claude chat's permission mode while it is in plan mode; null once it left plan mode. */
-  public setPlanPermission(threadId: string, mode: string | null): void {
-    if ((this.data.planPermissions![threadId] ?? null) === mode) return;
-    if (mode) this.data.planPermissions![threadId] = mode;
-    else delete this.data.planPermissions![threadId];
+  public planModel(threadId: string): string | undefined { return this.data.planModels![threadId]; }
+
+  /** A Claude chat's permission mode and model while it is in plan mode; null once it left plan mode. */
+  public setPlan(threadId: string, plan: { permissionMode: string; model: string | null } | null): void {
+    if (this.data.planPermissions![threadId] === plan?.permissionMode && this.data.planModels![threadId] === (plan?.model ?? undefined)) return;
+    delete this.data.planPermissions![threadId];
+    delete this.data.planModels![threadId];
+    if (plan) this.data.planPermissions![threadId] = plan.permissionMode;
+    if (plan?.model) this.data.planModels![threadId] = plan.model;
     this.save();
   }
 
@@ -155,6 +161,7 @@ export class Meta {
     this.data.archived = this.data.archived.filter((id) => id !== threadId);
     delete this.data.sections[threadId];
     delete this.data.planPermissions![threadId];
+    delete this.data.planModels![threadId];
     delete this.data.pausedGoals![threadId];
     this.save();
   }

@@ -878,12 +878,20 @@ const scenarios = {
     check(planned.turn.status === "completed" && plan?.text, "the plan turn completed with a plan item", itemsOf(liveTurns(thread.id, since)));
     check(!client.asked.length, "leaving plan mode asks nothing", client.asked.map((m) => `${m.method} ${m.params.command ?? ""}`));
     check(!readFileSync(greet, "utf8").includes("verbose"), "nothing implemented before the plan is accepted");
+    // Claude plans a Haiku chat on Sonnet and its transcript names only that: after a restart the chat is still on Haiku.
+    const transcript = join(HOME, ".claude", "projects", dir.replace(/[^a-zA-Z0-9]/gu, "-"), `${thread.id}.jsonl`);
+    const plannedOn = [...new Set(readFileSync(transcript, "utf8").trim().split("\n").map((line) => JSON.parse(line).message?.model).filter(Boolean))];
+    client.close();
+    await daemon("restart");
+    client = await Client.connect();
+    const resumed = await client.request("thread/resume", { threadId: thread.id });
+    check(resumed.model === state.haiku && resumed.thread.model === state.haiku, "after a restart the chat keeps its model", { model: resumed.model, plannedOn });
     await client.request("thread/settings/update", { threadId: thread.id, collaborationMode: mode("default") });
     const done = await client.turn(thread.id, `PLEASE IMPLEMENT THIS PLAN:\n${plan.text}`, { turnTrigger: "plan_implementation", collaborationMode: mode("default") });
     check(readFileSync(greet, "utf8").includes("verbose"), "the accepted plan was implemented", done.answers);
     check(!client.asked.length, "implemented with the chat's full access", client.asked.map((m) => `${m.method} ${m.params.command ?? ""}`));
     check((await items(thread.id)).some((item) => item.type === "plan" && item.id === plan.id), "history shows the plan");
-    return { plan: plan.text.slice(0, 300), planAnswers: planned.answers, answers: done.answers, greet: readFileSync(greet, "utf8") };
+    return { plan: plan.text.slice(0, 300), planAnswers: planned.answers, plannedOn, answers: done.answers, greet: readFileSync(greet, "utf8") };
   },
 
   /** A session started with the claude CLI shows up by itself (the image has no ~/.claude/projects yet), continues

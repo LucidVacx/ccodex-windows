@@ -341,6 +341,21 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).planPermissions).toEqual({});
   });
 
+  it("keeps a Haiku chat on Haiku after a restart in plan mode (Claude plans it on Sonnet and records only that)", async () => {
+    const haiku = "claude:claude-haiku-4-5-20251001";
+    const mode = (name: string) => ({ mode: name, settings: { model: haiku, reasoning_effort: null, developer_instructions: null } });
+    const { thread } = await client.request("thread/start", { model: haiku, cwd: "/work" });
+    await client.turn(thread.id, "propose a plan: 1. add the flag", { collaborationMode: mode("plan") });
+    const meta = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8"));
+    await gateway.stop();
+    gateway = await startTestGateway({}, meta);
+    client = await gateway.connect();
+    expect((await client.request("thread/read", { threadId: thread.id })).thread.model).toBe(haiku);
+    expect(await client.request("thread/resume", { threadId: thread.id })).toMatchObject({ model: haiku });
+    await client.turn(thread.id, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag", { collaborationMode: mode("default") });
+    expect(fakeClaude.options.at(-1)!.model).toBe("claude-haiku-4-5-20251001");
+  });
+
   it("puts Claude's question to the user in the client's own question UI, even with full access", async () => {
     const threadId = await claudeThread();
     const asked: any[] = [];
