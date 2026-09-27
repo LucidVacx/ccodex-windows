@@ -13,7 +13,7 @@ import { Connection } from "./connection.js";
 import { Lineages } from "./lineage.js";
 import { RemoteControl } from "./remote.js";
 import { acquireSocketStartupLock, prepareUnixSocket } from "./socket.js";
-import { isStatusCommand, statusCommand } from "./status.js";
+import { isStatusCommand, statusCommand, statusSkill } from "./status.js";
 import { StockClient, openStockSocket, startStockProcess, type StockProcess } from "./stock.js";
 import { Titles } from "./titles.js";
 
@@ -58,6 +58,7 @@ export class Gateway {
   private readonly serverRequests = new Map<string, PendingServerRequest>();
   private readonly internalTurns = new Map<string, { text: string; resolve: (text: string) => void; reject: (error: Error) => void }>();
   private nextServerRequest = 0;
+  private statusSkill!: Promise<JsonObject>;
 
   public constructor(
     public readonly config: Config,
@@ -77,6 +78,7 @@ export class Gateway {
     this.lineages = new Lineages(this);
     this.titles = new Titles(this);
     this.remote = new RemoteControl(this.socketPath, this.logger, remoteControl);
+    this.statusSkill = statusSkill(this.config.dataDir);
     // The socket opens before the first scan: a client connects at once and its requests wait for it.
     this.ready = this.claude.start().catch((error: unknown) => this.logger.error("claude.start.failed", { error: String(error) }));
     // Desktop's first skills/list (no cwds: stock's own) finds Claude's skills ready.
@@ -308,14 +310,15 @@ export class Gateway {
       ]);
       return { ...stock, data: [...stock.data, ...claude] };
     });
-    // Both providers' skills in every chat: Desktop asks per cwd, never per thread. Without cwds (what Desktop mostly
-    // sends) stock answers for its own cwd, and so do Claude's.
+    // Both providers' skills in every chat, and the status command: Desktop asks per cwd, never per thread. Without
+    // cwds (what Desktop mostly sends) stock answers for its own cwd, and so do Claude's.
     on("skills/list", async (connection, params) => {
       const stock = await connection.upstream.request("skills/list", params);
       const claude = await this.claude.skills(stock.data.map((entry: JsonObject) => entry.cwd)).catch(() => new Map<string, unknown[]>());
+      const status = await this.statusSkill;
       return {
         ...stock,
-        data: stock.data.map((entry: JsonObject) => ({ ...entry, skills: [...entry.skills, ...claude.get(entry.cwd) ?? []] })),
+        data: stock.data.map((entry: JsonObject) => ({ ...entry, skills: [status, ...entry.skills, ...claude.get(entry.cwd) ?? []] })),
       };
     });
     on("account/rateLimits/read", (connection, params) => connection.provider === "claude"

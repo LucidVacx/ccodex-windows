@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { packageVersion } from "../management/commands.js";
 import type { JsonObject, ThreadItem, Turn } from "../protocol/codex.js";
 import { startedTurn } from "../protocol/turnPagination.js";
@@ -7,11 +9,36 @@ import type { Connection } from "./connection.js";
 import type { Gateway } from "./server.js";
 
 const COMMANDS = new Set(["cc", "ccstatus", "ccodex", "ccstate"]);
+const SKILL = "ccodex:status";
+/** What Desktop sends for the picked skill. */
+const SKILL_CHIP = /^\[\$ccodex:status\]\([^)]*\)$/u;
 
-/** `/cc` (or `/ccstatus`, `/ccodex`, `/ccstate`, with or without the slash): CCodex's status of this chat. */
+/**
+ * The command as a skill, so the App's `/` menu offers it: "CCodex status" comes first for `/cc`, `/ccodex`,
+ * `/ccstatus`. Its SKILL.md is only what the App shows for it; the model never gets it.
+ */
+export async function statusSkill(dataDir: string): Promise<JsonObject> {
+  const path = join(dataDir, "virtual", "ccodex-status", "SKILL.md");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `---\nname: ${SKILL}\ndescription: CCodex status of this chat\n---\n\nCCodex answers this itself (same as \`/cc\`); the model never sees it.\n`);
+  return {
+    name: SKILL,
+    description: "Model, context, Claude and Codex limits, session of this chat",
+    interface: { displayName: "CCodex status", shortDescription: "Model, context, limits, session" },
+    path,
+    scope: "system",
+    enabled: true,
+    pluginId: null,
+  };
+}
+
+/** `/cc` (or `/ccstatus`, `/ccodex`, `/ccstate`, with or without the slash, or the skill): CCodex's status of this chat. */
 export function isStatusCommand(params: JsonObject): boolean {
   const input = params.input ?? [];
-  return input.length === 1 && input[0]?.type === "text" && COMMANDS.has(String(input[0].text).trim().toLowerCase().replace(/^\//u, ""));
+  if (input.length !== 1) return false;
+  if (input[0].type === "skill") return input[0].name === SKILL;
+  const text = input[0].type === "text" ? String(input[0].text).trim() : "";
+  return COMMANDS.has(text.toLowerCase().replace(/^\//u, "")) || SKILL_CHIP.test(text);
 }
 
 interface Window {

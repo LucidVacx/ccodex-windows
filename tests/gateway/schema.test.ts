@@ -62,7 +62,7 @@ describe("wire objects of Claude threads validate against the installed codex sc
     for (const model of (await call("model/list", {})).data.filter((entry: any) => entry.id.startsWith("claude:"))) {
       errors.push(...validate("Model", model, `model ${model.id}`));
     }
-    for (const skill of (await call("skills/list", { cwds: ["/work"] })).data[0].skills.filter((entry: any) => entry.name.startsWith("claude:"))) {
+    for (const skill of (await call("skills/list", { cwds: ["/work"] })).data[0].skills.filter((entry: any) => /^c(laude|codex):/u.test(entry.name))) {
       errors.push(...validate("SkillMetadata", skill, `skill ${skill.name}`));
     }
     await call("account/rateLimits/read", {}, "GetAccountRateLimitsResponse");

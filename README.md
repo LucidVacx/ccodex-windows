@@ -46,8 +46,9 @@ missing bridge.
 - 🧩 **Claude skills in `$` autocomplete** — project and user skills appear beside Codex
   skills and invoke Claude's native slash commands.
 - 📊 **Status command** — `/cc` (also `/ccstatus`, `/ccodex`, `/ccstate`, with or without
-  the slash) shows the chat's model, settings, context and session next to ❋ Claude and
-  ֎ Codex quotas. Sent while a turn runs, it answers at once without reaching the model.
+  the slash, or *CCodex status* in the App's `/` menu) shows the chat's model, settings,
+  context and session next to ❋ Claude and ֎ Codex quotas. Sent while a turn runs, it
+  answers at once without reaching the model.
 - ✨ **Bonus: better thread titles** — threads in the Codex App get auto-named in a
   fun, readable way with an emoji prefix, so you can tell them apart at a glance.
   Want your own naming style? Drop any custom prompt into `~/.ccodex/config.toml`.

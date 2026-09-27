@@ -57,10 +57,11 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const models = await client.request("model/list", {});
     expect(models.data.map((model: any) => model.id)).toEqual(expect.arrayContaining(["gpt-6-luna", CLAUDE]));
     const skills = await client.request("skills/list", { cwds: ["/work"] });
-    expect(skills.data[0].skills.map((skill: any) => skill.name)).toEqual(["stock-skill", "claude:review-pr"]);
+    expect(skills.data[0].skills.map((skill: any) => skill.name)).toEqual(["ccodex:status", "stock-skill", "claude:review-pr"]);
+    expect(skills.data[0].skills[0].interface.displayName).toBe("CCodex status");
     // What Desktop mostly sends: no cwds, stock's own cwd.
     const defaults = await client.request("skills/list", { forceReload: true });
-    expect(defaults.data.map((entry: any) => [entry.cwd, entry.skills.map((skill: any) => skill.name)])).toEqual([["/home/fake", ["stock-skill", "claude:review-pr"]]]);
+    expect(defaults.data.map((entry: any) => [entry.cwd, entry.skills.map((skill: any) => skill.name)])).toEqual([["/home/fake", ["ccodex:status", "stock-skill", "claude:review-pr"]]]);
   });
 
   it("points a Claude skill at Claude's file for it, or at a note, so a GPT chat mentioning it can read it", async () => {
@@ -387,7 +388,9 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(answerOf(threadId)).toMatch(/^### ◆ CCodex `[^`]+`\n\n\*\*֎ /u);
     expect(answerOf(threadId)).toContain("| **Claude** | limits appear after the first Claude turn |");
     const claude = await claudeThread();
-    for (const command of ["/cc", "CC", " ccodex ", "/ccstate", "ccstatus"]) {
+    // The skill Desktop's `/` menu offers arrives as its chip.
+    const chip = `[$ccodex:status](${(await client.request("skills/list", {})).data[0].skills[0].path}) `;
+    for (const command of ["/cc", "CC", " ccodex ", "/ccstate", "ccstatus", chip]) {
       await client.turn(claude, command);
       expect(answerOf(claude)).toContain("**❋ Claude Opus 5.5** · Ask · 🟡 Idle");
     }
