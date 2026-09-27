@@ -552,14 +552,26 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "ship it", status: "active" });
     expect(fakeClaude.prompts.map((prompt) => prompt.text)).toContain("/goal ship it");
 
-    // Claude has no pause (Desktop pauses before it stops a turn too): the goal stays active and the chat says why.
-    const lastTurn = client.notifications("turn/completed", threadId).at(-1)!.params.turn.id;
-    const sent = fakeClaude.prompts.length;
-    expect((await client.request("thread/goal/set", { threadId, status: "paused" })).goal).toMatchObject({ objective: "ship it", status: "active" });
-    const refusal = await client.waitFor("error", (params) => params.threadId === threadId);
-    expect(refusal).toMatchObject({ turnId: lastTurn, willRetry: false, error: { message: "Pausing goals isn't supported for Claude models: the goal stays active." } });
+    // Claude's /goal has no pause: pausing clears it there and keeps it in meta.json, resuming sets it again.
+    const turnsBefore = client.notifications("turn/started", threadId).length;
+    expect((await client.request("thread/goal/set", { threadId, status: "paused" })).goal).toMatchObject({ objective: "ship it", status: "paused" });
+    await vi.waitFor(() => expect(fakeClaude.prompts.at(-1)?.text).toBe("/goal clear"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "ship it", status: "paused" });
+    expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).pausedGoals[threadId]).toMatchObject({ objective: "ship it" });
+    expect(client.notifications("turn/started", threadId)).toHaveLength(turnsBefore);
     expect((await client.request("thread/goal/set", { threadId, status: "active" })).goal).toMatchObject({ objective: "ship it", status: "active" });
-    expect(fakeClaude.prompts).toHaveLength(sent);
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+    expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).pausedGoals).toEqual({});
+    // Cleared while paused: Claude has nothing to clear.
+    await client.request("thread/goal/set", { threadId, status: "paused" });
+    await vi.waitFor(() => expect(fakeClaude.prompts.at(-1)?.text).toBe("/goal clear"));
+    const beforeClear = fakeClaude.prompts.length;
+    expect(await client.request("thread/goal/clear", { threadId })).toEqual({ cleared: true });
+    expect((await client.request("thread/goal/get", { threadId })).goal).toBeNull();
+    expect(fakeClaude.prompts).toHaveLength(beforeClear);
+    await client.request("thread/goal/set", { threadId, objective: "ship it" });
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
 
     // Claude drops a met goal: reported complete once, then Desktop's clear sends Claude nothing.
     await client.turn(threadId, "this meets the goal: ship it");
@@ -592,7 +604,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const history = await client.request("thread/read", { threadId, includeTurns: true });
     const historyItems = history.thread.turns.flatMap((t: any) => t.items);
     const texts = historyItems.filter((item: any) => item.type === "userMessage").map((item: any) => item.content[0].text);
-    expect(texts).toEqual(["start", "/goal ship it", "this meets the goal: ship it", "/goal keep going", "/goal again"]);
+    expect(texts).toEqual(["start", "/goal ship it", "/goal ship it", "/goal ship it", "this meets the goal: ship it", "/goal keep going", "/goal again"]);
     const said = [...historyItems, ...client.notifications("item/completed", threadId).map((message) => message.params.item)]
       .filter((item: any) => item.type === "agentMessage").map((item: any) => item.text);
     expect(said.filter((text: string) => /Goal (?:set|cleared)|No goal/u.test(text))).toEqual([]);

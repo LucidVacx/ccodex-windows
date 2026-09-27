@@ -454,7 +454,7 @@ const scenarios = {
     return { after: itemsOf(read.turns), rollbackTurns: result.thread.turns.length, answers: done.answers };
   },
 
-  /** Desktop's goal actions on a Claude chat: set → met, pause (refused), edit and clear while Claude pursues a goal. */
+  /** Desktop's goal actions on a Claude chat: set → met, pause and resume, edit and clear while Claude pursues a goal. */
   async goal() {
     const dir = join(WORK, "goal-e2e");
     const { thread } = await client.request("thread/start", { model: state.haiku, cwd: WORK });
@@ -470,15 +470,24 @@ const scenarios = {
     check(met.turnId, "completion names its turn", met);
     check((await client.request("thread/goal/clear", { threadId })).cleared === true, "completed goal cleared");
     check((await client.request("thread/goal/get", { threadId })).goal === null, "no goal after clear");
-    // A goal Claude keeps pursuing: pause is refused (the goal stays active), an edit replaces it.
+    // A goal Claude keeps pursuing: pause stops it (kept as paused), resume goes on, an edit replaces it.
     const long = (name) => `Files ${dir}/${name}1.txt through ${dir}/${name}40.txt exist, each containing its number. Create exactly ONE file per turn, then end the turn.`;
     from = client.messages.length;
     await client.request("thread/goal/set", { threadId, objective: long("n"), status: "active" });
     await after("item/completed", (p) => p.item.type === "fileChange", from);
+    const pausedAt = client.messages.length;
     const paused = await client.request("thread/goal/set", { threadId, status: "paused" });
-    check(paused.goal?.status === "active" && paused.goal.objective === long("n"), "pause keeps the goal active", paused);
-    const refusal = await after("error", () => true, from, 10_000);
-    check(/Pausing goals isn't supported for Claude models/u.test(refusal.error.message), "pause refusal shown", refusal);
+    check(paused.goal?.status === "paused" && paused.goal.objective === long("n"), "goal paused", paused);
+    const halted = await after("turn/completed", () => true, pausedAt, 60_000);
+    check(halted.turn.status === "interrupted", "pause stops the running goal turn", halted);
+    await sleep(8000);
+    const idle = client.messages.slice(pausedAt).filter((m) => m.method === "turn/started" && m.params.threadId === threadId);
+    check(idle.length === 0, "no turn while paused", idle);
+    check((await client.request("thread/goal/get", { threadId })).goal?.status === "paused", "goal stays paused");
+    from = client.messages.length;
+    const resumed = await client.request("thread/goal/set", { threadId, status: "active" });
+    check(resumed.goal?.status === "active" && resumed.goal.objective === long("n"), "goal resumed", resumed);
+    await after("item/completed", (p) => p.item.type === "fileChange", from);
     from = client.messages.length;
     await client.request("thread/goal/set", { threadId, objective: `The file ${dir}/done.txt exists and contains DONE.`, status: "active" });
     const stopped = await after("turn/completed", () => true, from, 60_000);

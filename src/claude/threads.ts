@@ -628,12 +628,13 @@ export class ClaudeThreads {
     this.onTurnCompleted?.(threadId, turnId);
   }
 
-  /** Claude's native `/goal` as a Codex ThreadGoal (Claude tracks no budget or time). */
+  /** Claude's native `/goal` as a Codex ThreadGoal (Claude tracks no budget or time); a paused one is kept in meta.json. */
   public goal(threadId: string): JsonObject | null {
-    const goal = this.catalog.get(threadId)?.goal;
+    const paused = this.gateway.meta.pausedGoal(threadId);
+    const goal = paused ? { ...paused, met: false } : this.catalog.get(threadId)?.goal;
     if (!goal) return null;
     return {
-      threadId, objective: goal.objective, status: goal.met ? "complete" : "active", tokenBudget: null, tokensUsed: 0,
+      threadId, objective: goal.objective, status: paused ? "paused" : goal.met ? "complete" : "active", tokenBudget: null, tokensUsed: 0,
       timeUsedSeconds: Math.max(0, goal.updatedAt - goal.createdAt), createdAt: goal.createdAt, updatedAt: goal.updatedAt,
     };
   }
@@ -925,6 +926,7 @@ export class ClaudeThreads {
         await this.catalog.refresh();
         const current = this.goal(threadId);
         if (params.objective) {
+          this.gateway.meta.setPausedGoal(threadId, null);
           const session = this.session(threadId);
           const goal = {
             threadId, objective: params.objective, status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0,
@@ -938,19 +940,25 @@ export class ClaudeThreads {
           });
           return { goal };
         }
-        // Claude's `/goal` has no pause (Desktop also pauses a goal before stopping its turn): the goal stays active.
-        if (params.status && params.status !== "active") {
-          void this.newestTurns(threadId, 1).then(({ turns }) => this.gateway.emit(threadId, "error", {
-            threadId, turnId: turns.at(-1)?.id, willRetry: false,
-            error: { message: "Pausing goals isn't supported for Claude models: the goal stays active.", codexErrorInfo: null, additionalDetails: null },
-          }));
-        }
-        return { goal: current };
+        // Claude's `/goal` has no pause: pausing clears it there (stopping its turn) and keeps it in meta.json; resuming
+        // sets it again.
+        const pausing = params.status === "paused" && current?.status === "active";
+        const resuming = params.status === "active" && current?.status === "paused";
+        if (!pausing && !resuming) return { goal: current };
+        const goal: JsonObject = { ...current!, status: params.status, updatedAt: now };
+        this.gateway.meta.setPausedGoal(threadId, pausing ? { objective: goal.objective, createdAt: goal.createdAt, updatedAt: now } : null);
+        setImmediate(() => {
+          this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal });
+          this.session(threadId).goal(pausing ? "clear" : goal.objective, pausing)
+            .catch((error: unknown) => this.logger.warn("claude.goal.update-failed", { threadId, error: String(error) }));
+        });
+        return { goal };
       }
       case "thread/goal/clear": {
         await this.catalog.refresh();
         const goal = this.goal(threadId);
         if (!goal) return { cleared: false };
+        this.gateway.meta.setPausedGoal(threadId, null);
         setImmediate(() => {
           this.gateway.emit(threadId, "thread/goal/cleared", { threadId });
           // Claude drops a met goal itself.

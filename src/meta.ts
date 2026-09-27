@@ -27,6 +27,8 @@ export interface MetaData {
   claudeDefaults?: Record<string, unknown> | null;
   /** Permission mode of Claude chats in plan mode: Claude runs them in its own plan mode and records only that. */
   planPermissions?: Record<string, string>;
+  /** Paused goals of Claude chats: Claude's `/goal` has no pause, so pausing clears it there and keeps it here. */
+  pausedGoals?: Record<string, { objective: string; createdAt: number; updatedAt: number }>;
 }
 
 /**
@@ -42,7 +44,7 @@ export class Meta {
     const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Partial<MetaData> : {};
     this.data = {
       lineages: raw.lineages ?? {}, archived: raw.archived ?? [], sections: raw.sections ?? {},
-      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, planPermissions: raw.planPermissions ?? {},
+      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null, planPermissions: raw.planPermissions ?? {}, pausedGoals: raw.pausedGoals ?? {},
     };
     this.reindex();
   }
@@ -138,10 +140,22 @@ export class Meta {
     this.save();
   }
 
+  public pausedGoal(threadId: string): { objective: string; createdAt: number; updatedAt: number } | undefined {
+    return this.data.pausedGoals![threadId];
+  }
+
+  public setPausedGoal(threadId: string, goal: { objective: string; createdAt: number; updatedAt: number } | null): void {
+    if (!goal && !this.data.pausedGoals![threadId]) return;
+    if (goal) this.data.pausedGoals![threadId] = goal;
+    else delete this.data.pausedGoals![threadId];
+    this.save();
+  }
+
   public forget(threadId: string): void {
     this.data.archived = this.data.archived.filter((id) => id !== threadId);
     delete this.data.sections[threadId];
     delete this.data.planPermissions![threadId];
+    delete this.data.pausedGoals![threadId];
     this.save();
   }
 
