@@ -32,14 +32,15 @@ export async function statusSkill(dataDir: string): Promise<JsonObject> {
   };
 }
 
-/** `/cc` (or `/ccstatus`, `/ccodex`, `/ccstate`, with or without the slash, or the skill): CCodex's status of this chat. */
+/** `/cc` (or `/ccstatus`, `/ccodex`, `/ccstate`, `ccodex:status`, with `/`, `$` or nothing before, or the skill): CCodex's status of this chat. */
 export function isStatusCommand(params: JsonObject): boolean {
   const input: JsonObject[] = params.input ?? [];
   // A skill picked in Desktop comes as its chip, or as `$ccodex:status` text plus the skill item.
   return input.length > 0 && input.every((item) => {
     if (item.type === "skill") return item.name === SKILL;
     const text = item.type === "text" ? String(item.text).trim() : "";
-    return COMMANDS.has(text.toLowerCase().replace(/^\//u, "")) || text === `$${SKILL}` || SKILL_CHIP.test(text);
+    const word = text.toLowerCase().replace(/^[/$]/u, "");
+    return COMMANDS.has(word) || word === SKILL || SKILL_CHIP.test(text);
   });
 }
 

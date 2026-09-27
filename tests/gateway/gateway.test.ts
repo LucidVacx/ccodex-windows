@@ -426,7 +426,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const claude = await claudeThread();
     // The skill Desktop's `/` menu offers arrives as its chip.
     const chip = `[$ccodex:status](${(await client.request("skills/list", {})).data[0].skills[0].path}) `;
-    for (const command of ["/cc", "CC", " ccodex ", "/ccstate", "ccstatus", chip]) {
+    for (const command of ["/cc", "CC", " ccodex ", "/ccstate", "ccstatus", "$cc", "$ccodex:status", chip]) {
       await client.turn(claude, command);
       expect(answerOf(claude)).toContain("**❋ Claude Opus 5.5** · Ask · 🟡 Idle");
     }
