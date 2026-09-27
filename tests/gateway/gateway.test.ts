@@ -387,6 +387,22 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two", "user:four", "agent:claude: four"]);
   });
 
+  it("offers stock's ultra effort on Claude models: Claude's max, delegation told on and off like stock's mode message, out of the history", async () => {
+    const opus = (await client.request("model/list", {})).data.find((model: any) => model.id === CLAUDE);
+    expect(opus.supportedReasoningEfforts.map((effort: any) => effort.reasoningEffort)).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one", { effort: "ultra" });
+    expect(fakeClaude.options.at(-1)!.effort).toBe("max");
+    await client.turn(threadId, "two", { effort: "ultra" });
+    await client.turn(threadId, "three", { effort: "high" });
+    const told = fakeClaude.prompts.filter((prompt) => !prompt.shouldQuery).map((prompt) =>
+      prompt.text.includes("Proactive multi-agent delegation is active") ? "on" : prompt.text.includes("delegation no longer applies") ? "off" : prompt.text);
+    expect(told).toEqual(["on", "off"]);
+    expect(fakeClaude.calls.filter((call) => call.method === "applyFlagSettings").map((call) => (call.args[0] as any).effortLevel)).toEqual(["high"]);
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(itemsOf(thread.turns)).toEqual(["user:one", "agent:claude: one", "user:two", "agent:claude: two", "user:three", "agent:claude: three"]);
+  });
+
   it("keeps a Claude model switch out of the thread's history", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "on opus");
@@ -848,6 +864,18 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
     const page = await client.request("thread/items/list", { threadId, turnId: thread.turns[0].id, limit: 100, sortDirection: "desc" });
     expect(page.data.map((entry: any) => entry.item.type)).toContain("userMessage");
+  });
+
+  it("pages on with a stock turns cursor handed out before the thread switched to Claude (issue #33)", async () => {
+    const threadId = await stockThread();
+    for (const word of ["one", "two", "three"]) await client.turn(threadId, word);
+    const page = (cursor: string | null) => client.request("thread/turns/list", { threadId, cursor, limit: 10, sortDirection: "desc" })
+      .then((result: any) => itemsOf(result.data));
+    const { nextCursor } = await client.request("thread/turns/list", { threadId, limit: 1, sortDirection: "desc" });
+    const before = await page(nextCursor);
+    expect(before).toEqual(["user:two", "agent:gpt: two", "user:one", "agent:gpt: one"]);
+    await client.turn(threadId, "four", { model: CLAUDE });
+    expect(await page(nextCursor)).toEqual(before);
   });
 
   it("describes a Claude thread's environment like stock does (Desktop files remote projects' threads by it)", async () => {

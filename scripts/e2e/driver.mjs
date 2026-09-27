@@ -303,6 +303,50 @@ const scenarios = {
     return { items, paged: paged.length, row: { provider: rows[0].modelProvider, model: rows[0].model, name: rows[0].name } };
   },
 
+  /**
+   * Desktop keeps the stock cursors it got before a GPT chat switched to Claude and scrolls up with them (issue #33):
+   * they page the same older turns and items as before the switch.
+   */
+  async staleCursorAfterSwitch() {
+    const { thread } = await client.request("thread/start", { model: GPT, cwd: WORK });
+    for (const word of ["ONE", "TWO", "THREE"]) await client.turn(thread.id, `Reply with exactly: ${word}`);
+    const page = (params) => client.request("thread/turns/list", { threadId: thread.id, sortDirection: "desc", itemsView: "notLoaded", ...params });
+    const newest = await page({ limit: 1 });
+    const olderTurns = async () => (await page({ cursor: newest.nextCursor, limit: 10 })).data.map((turn) => turn.id);
+    const resumed = await client.request("thread/resume", { threadId: thread.id, excludeTurns: true });
+    const oldTurn = newest.data[0].id;
+    const turnItems = async () => (await client.request("thread/items/list", { threadId: thread.id, turnId: oldTurn, cursor: resumed.itemsBackwardsCursor, limit: 100, sortDirection: "desc" })).data.map((entry) => entry.item.id);
+    const before = { turns: await olderTurns(), items: await turnItems() };
+    await client.turn(thread.id, "Reply with exactly: FOUR", { model: state.haiku }, 400_000);
+    const after = { turns: await olderTurns().catch((error) => error.message), items: await turnItems().catch((error) => error.message) };
+    check(JSON.stringify(after) === JSON.stringify(before), "pre-switch stock cursors page the same turns and items", { cursor: newest.nextCursor, itemsCursor: resumed.itemsBackwardsCursor, before, after });
+    return { turns: before.turns.length, items: before.items.length };
+  },
+
+  /**
+   * An upgrade from 0.4 (issue #36): codex installed by npm into ~/.local (its `bin/codex` is a relative link), set up
+   * by ccodex 0.4.25, then by this build, in a home of its own.
+   */
+  async upgradeFrom04() {
+    const home = join(HOME, "h04");
+    const env = { ...process.env, HOME: home, NPM_CONFIG_PREFIX: join(home, ".local"), PATH: `${home}/.ccodex/bin:${home}/.local/bin:/usr/local/bin:/usr/bin:/bin` };
+    const run = (command) => { const result = spawnSync("sh", ["-c", command], { env, encoding: "utf8", timeout: 900_000 }); return `${result.stdout}${result.stderr}`.trim(); };
+    execFileSync("mkdir", ["-p", home]);
+    const version = JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")).version;
+    const steps = {};
+    steps.codex = run("npm i -g @openai/codex --no-audit --no-fund >/dev/null 2>&1; readlink ~/.local/bin/codex");
+    steps.setup04 = run("npx --yes --package @gkorepanov/ccodex@0.4.25 ccodex setup 2>&1 | tail -4");
+    steps.backup04 = run("ls -l ~/.ccodex/backups/remote-codex 2>&1; test -e ~/.ccodex/backups/remote-codex && echo resolves || echo dangles");
+    steps.upgrade = run(`CCODEX_PACKAGE_SPEC=/tmp/ccodex.tgz CCODEX_RELAY_PACKAGE_SPEC=/tmp/relay.tgz ccodex setup --version ${version} 2>&1 | grep -v "^installed "`);
+    steps.doctor = run("ccodex doctor 2>&1 | grep 'codex:'");
+    steps.backup = run("readlink ~/.ccodex/backups/remote-codex; readlink ~/.local/bin/codex");
+    run("codex app-server daemon stop");
+    // The codex npm installed stays the one CCodex runs: the upgrade neither loses it nor installs another.
+    check(steps.doctor.includes(`✓ codex: ${home}/.ccodex/backups/remote-codex`) && !steps.upgrade.includes("No codex on PATH")
+      && steps.backup.startsWith(`${home}/.local/lib/node_modules/@openai/codex/bin/codex.js`), "the upgrade from 0.4 keeps the installed codex", steps);
+    return steps;
+  },
+
   /** Find in chat across a switched thread's segments (stock's own search for the GPT one), and search of all chats. */
   async searchInChat() {
     const threadId = state.switched;
@@ -1031,7 +1075,7 @@ const scenarios = {
 };
 
 /** Scenarios that install, migrate or uninstall: a second attempt would not start from the same state. */
-const NO_RETRY = new Set(["migration", "officialInstaller", "management"]);
+const NO_RETRY = new Set(["migration", "officialInstaller", "management", "upgradeFrom04"]);
 
 /** What each chat last said: tells a model that did not do as asked from a bug. */
 const lastAnswers = (messages) => Object.fromEntries(messages
