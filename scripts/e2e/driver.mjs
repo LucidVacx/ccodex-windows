@@ -695,12 +695,15 @@ const scenarios = {
     try {
       const { thread } = await client.request("thread/start", { model: state.haiku, cwd: WORK, approvalPolicy: "never", sandbox: "danger-full-access" });
       // A background command that computes for 25 s (3× the idle wait) finishes; one that sleeps is ended once idle.
+      // Either runs on past its turn (stock's background terminal); its end wakes Claude up in a turn of its own.
       let at = Date.now();
-      await client.turn(thread.id, "Use the Bash tool with run_in_background set to true to run exactly: timeout 25 sh -c 'while :; do :; done'; echo busy-done > /home/node/work/busy.txt\nThen reply STARTED at once, without waiting for it.");
+      await client.turn(thread.id, "Use the Bash tool with run_in_background set to true to run exactly: timeout 25 sh -c 'while :; do :; done'; echo busy-done > /home/node/work/busy.txt\nThen reply STARTED at once, without waiting for it.", {}, 240_000, 2);
       const busySeconds = (Date.now() - at) / 1_000;
       check(existsSync(join(WORK, "busy.txt")) && busySeconds >= 25, "a working background command runs to its end", busySeconds);
       at = Date.now();
+      const hungSince = client.messages.length;
       await client.turn(thread.id, "Use the Bash tool to run exactly: nohup sleep 600 >/dev/null 2>&1 & echo $! > /home/node/work/detached.pid\nThen use the Bash tool with run_in_background set to true to run exactly: sleep 600; echo slept > /home/node/work/hung.txt\nThen reply STARTED at once, without waiting for it.");
+      await client.waitFor("item/completed", (p) => p.threadId === thread.id && p.item.type === "commandExecution" && /sleep 600;/u.test(p.item.command), 120_000, hungSince);
       const hungSeconds = (Date.now() - at) / 1_000;
       check(!existsSync(join(WORK, "hung.txt")) && hungSeconds < 120, "a hung background command is ended", hungSeconds);
       // Stopped the way Claude's stop control does: Claude does not take it for a failure to retry.

@@ -183,6 +183,13 @@ function assistantBlocks(record: AssistantRecord): readonly Record<string, unkno
     block !== null && typeof block === "object");
 }
 
+/** Claude Code's filler reply to a turn cut off mid-way, written when the session resumes; its own UI hides it. */
+function resumeFiller(record: TranscriptChainRecord): boolean {
+  if (record.type !== "assistant" || record.isApiErrorMessage === true || record.message.model !== "<synthetic>") return false;
+  const blocks = assistantBlocks(record);
+  return blocks.length === 1 && blocks[0]!.text === "No response requested.";
+}
+
 function outputText(value: unknown): string {
   if (typeof value === "string") return value;
   if (!Array.isArray(value)) return "";
@@ -432,7 +439,7 @@ function assistantItems(
 function turnStatus(records: readonly TranscriptChainRecord[], hasFollowingTurn: boolean): Turn["status"] {
   const failed = records.some((record) => record.type === "system" && record.subtype === "api_error"
     || record.type === "assistant" && (record.isApiErrorMessage === true || Boolean(record.error)));
-  const interrupted = records.some((record) => record.type === "user" && (record.interruptedByShutdown === true
+  const interrupted = records.some((record) => resumeFiller(record) || record.type === "user" && (record.interruptedByShutdown === true
     || record.toolUseResult?.interrupted === true || /^\[Request interrupted by user(?: for tool use)?\]$/u.test(userText(record))));
   if (interrupted) return "interrupted";
   if (failed) return "failed";
@@ -576,6 +583,7 @@ function projectTurns(
     }
     const projectedResponses = new Set<string>();
     for (const record of prompt ? turnRecords.slice(1) : turnRecords) {
+      if (resumeFiller(record)) continue;
       if (record.type === "assistant") {
         const messageId = record.message.id!;
         if (projectedResponses.has(messageId)) continue;

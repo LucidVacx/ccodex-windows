@@ -135,6 +135,16 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const { thread } = await client.request("thread/read", { threadId: id, includeTurns: true });
     expect(thread.turns.map((turn: any) => turn.status)).toEqual(["interrupted"]);
     expect(thread.turns[0].items.find((item: any) => item.type === "commandExecution")).toMatchObject({ status: "failed", aggregatedOutput: "Exit code 137" });
+    // The next prompt resumes it: Claude Code writes its filler for the cut turn (its own UI hides it) before the prompt.
+    appendFileSync(join(directory, `${id}.jsonl`), [
+      { type: "user", uuid: "u3", parentUuid: "u2", isMeta: true, ...at(4), message: { role: "user", content: [{ type: "text", text: "Continue from where you left off." }] } },
+      { type: "assistant", uuid: "a3", parentUuid: "u3", ...at(4), message: { role: "assistant", model: "<synthetic>", id: "synthetic-1", stop_reason: "stop_sequence", content: [{ type: "text", text: "No response requested." }] } },
+      { type: "user", uuid: "u4", parentUuid: "a3", ...at(5), message: { role: "user", content: "is it back?" } },
+      { type: "assistant", uuid: "a4", parentUuid: "u4", ...at(6), message: { role: "assistant", model: "claude-opus-5-5", id: "msg_4", stop_reason: "end_turn", content: [{ type: "text", text: "back" }] } },
+    ].map((line) => `${JSON.stringify(line)}\n`).join(""));
+    const resumed2 = (await client.request("thread/read", { threadId: id, includeTurns: true })).thread;
+    expect(resumed2.turns.map((turn: any) => turn.status)).toEqual(["interrupted", "completed"]);
+    expect(itemsOf(resumed2.turns)).toEqual(["user:wait for the restart", "commandExecution", "user:is it back?", "agent:back"]);
 
     // Mid-command (Claude waits for the approval): the turn runs, and so does the thread in the sidebar.
     const threadId = await claudeThread();
