@@ -758,6 +758,14 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       expect(desktop.notifications("thread/settings/updated", threadId).at(-1)?.params.threadSettings.model).toBe(to);
     });
 
+  it("tells every client with a Claude chat open the model another client's turn picked", async () => {
+    const desktop = await gateway.connect();
+    const { thread } = await desktop.request("thread/start", { model: CLAUDE, cwd: "/work" });
+    await client.request("thread/resume", { threadId: thread.id });
+    await client.turn(thread.id, "on haiku", { model: "claude:claude-haiku-4-5-20251001" });
+    expect(desktop.notifications("thread/settings/updated", thread.id).at(-1)?.params.threadSettings.model).toBe("claude:claude-haiku-4-5-20251001");
+  });
+
   // The live matrix (experiments/2026_09_23_thin_rewrite/scripts/edit_switch.mjs): a step is a turn, an edit of
   // turn N (Desktop: revert before it, then the step after it sends the new text) or a fork at turn N.
   type Step = { model: string; text: string } | { revert: number } | { fork: number; model: string; text: string };

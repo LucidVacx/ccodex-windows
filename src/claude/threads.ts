@@ -891,10 +891,7 @@ export class ClaudeThreads {
         return {};
       }
       case "thread/settings/update": {
-        const session = this.session(threadId);
-        if (await session.updateSettings(params)) {
-          this.gateway.emit(threadId, "thread/settings/updated", { threadId, threadSettings: this.threadSettings(session.settings) });
-        }
+        await this.session(threadId).updateSettings(params);
         return {};
       }
       // Claude's settings have no per-turn scope: the running turn's change stays for the chat.

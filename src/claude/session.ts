@@ -480,12 +480,14 @@ export class ClaudeSession {
     if (Object.keys(update).length) await this.updateSettings(update);
   }
 
-  public async updateSettings(params: JsonObject): Promise<boolean> {
+  public async updateSettings(params: JsonObject): Promise<void> {
     const next = this.host.settingsFrom(params, this.settings);
     const changed = JSON.stringify(next) !== JSON.stringify(this.settings);
-    if (!changed) return false;
+    if (!changed) return;
     const previous = this.settings;
     this.settings = next;
+    // Like stock, every client with the chat open learns the change (Desktop's composer follows it).
+    this.emit("thread/settings/updated", { threadId: this.threadId, threadSettings: this.host.threadSettings(next) });
     if (this.sdk) {
       if (next.model !== previous.model) await this.sdk.setModel(next.model ?? undefined);
       // The CLI settles the mode per model (no auto mode on Haiku falls back to default): a new model re-applies it.
@@ -494,7 +496,6 @@ export class ClaudeSession {
         await this.sdk.applyFlagSettings({ effortLevel: claudeEffort(next.effort) as never, fastMode: next.fast });
       }
     }
-    return true;
   }
 
   // ---- turn bookkeeping ----
