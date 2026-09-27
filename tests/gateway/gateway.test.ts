@@ -648,6 +648,26 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(history.thread.turns).toHaveLength(turns);
   });
 
+  it("carries a chat's goal to the model it switches to, active or paused, and stops the Claude session it leaves", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "start");
+    await client.request("thread/goal/set", { threadId, objective: "ship it" });
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+    await client.turn(threadId, "go", { model: "gpt-6-luna" });
+    expect(fakeClaude.prompts.map((prompt) => prompt.text)).toContain("/goal clear");
+    expect(fakeClaude.calls.filter((call) => call.method === "close").map((call) => call.args[0])).toContain(threadId);
+    expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ threadId, objective: "ship it", status: "active" });
+    expect(client.notifications("thread/goal/updated", threadId).at(-1)!.params.goal).toMatchObject({ threadId, objective: "ship it", status: "active" });
+
+    await client.request("thread/goal/set", { threadId, status: "paused" });
+    await client.turn(threadId, "back", { model: CLAUDE });
+    const claude = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).lineages[threadId].at(-1).threadId;
+    expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ threadId, objective: "ship it", status: "paused" });
+    expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).pausedGoals[claude]).toMatchObject({ objective: "ship it" });
+    await client.request("thread/goal/set", { threadId, status: "active" });
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+  });
+
   it("takes Desktop's goal mode (a `/goal X` turn, then goal X set) as one goal that edits and pauses replace", async () => {
     const threadId = await claudeThread();
     const texts = () => fakeClaude.prompts.map((prompt) => prompt.text);

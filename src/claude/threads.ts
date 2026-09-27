@@ -1148,6 +1148,32 @@ export class ClaudeThreads {
     return {};
   }
 
+  /** The goal of a Claude backend the chat switches away from, out of Claude (a running goal turn stops). */
+  public async takeGoal(threadId: string): Promise<JsonObject | null> {
+    await this.catalog.refresh();
+    const goal = this.goal(threadId);
+    if (goal?.status === "active") await this.session(threadId).goal("clear", true);
+    this.gateway.meta.setPausedGoal(threadId, null);
+    return goal?.status === "complete" ? null : goal;
+  }
+
+  /** A goal the chat brings to this Claude backend as it switches (or keeps as a switch fails). */
+  public async giveGoal(threadId: string, goal: JsonObject): Promise<void> {
+    if (goal.status === "paused") this.gateway.meta.setPausedGoal(threadId, { objective: goal.objective, createdAt: goal.createdAt, updatedAt: goal.updatedAt });
+    else await this.session(threadId).goal(goal.objective, false);
+  }
+
+  /** A Claude backend the chat switched away from: nothing of it runs on (background tasks, process). */
+  public async retire(threadId: string): Promise<void> {
+    const session = this.sessions.get(threadId);
+    if (!session) return;
+    this.sessions.delete(threadId);
+    await session.stopTasks();
+    const pids = sessionProcesses().filter((process) => process.session === threadId).map((process) => process.pid);
+    await session.unload();
+    killProcesses(pids);
+  }
+
   /** Removes a session with its transcript (also what a failed switch to Claude leaves behind). */
   public async discard(threadId: string): Promise<void> {
     await this.sessions.get(threadId)?.unload();

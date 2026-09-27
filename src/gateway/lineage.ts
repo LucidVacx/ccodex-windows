@@ -547,6 +547,8 @@ export class Lineages {
     };
     if (source.provider === "claude") {
       const session = this.gateway.claude.session(source.threadId);
+      // The goal goes on with the chat's next backend.
+      const goal = await this.gateway.claude.takeGoal(source.threadId);
       // Its compaction is no turn of the chat: it shows inside the user's turn.
       for (const viewer of viewers) this.gateway.unsubscribe(source.threadId, viewer);
       let summary = "";
@@ -568,16 +570,22 @@ export class Lineages {
           }
           lastTurnId = turns.at(-2)!.id;
         }
-        return await this.toCodex(connection, viewers, tell, publicId, segments, { ...source, lastTurnId }, summary, params);
+        return await this.toCodex(connection, viewers, tell, publicId, segments, { ...source, lastTurnId }, summary, params, goal);
       } catch (error) {
         // The chat stays on Claude. Desktop only settles its pending message on a turn it saw start.
         for (const viewer of viewers) this.gateway.subscribe(source.threadId, viewer);
         tell("turn/started", { threadId: publicId, turn: startedTurn(turn) });
-        return failed(turn, error);
+        const answer = failed(turn, error);
+        if (goal) await this.gateway.claude.giveGoal(source.threadId, goal);
+        return answer;
       }
     }
     // codex → claude: stock compaction is encrypted, so an ephemeral fork writes a summary with the same model.
     const cwd = (await this.thread(source)).cwd;
+    const found: JsonObject = await connection.upstream.request("thread/goal/get", { threadId: source.threadId });
+    const goal = found.goal?.status === "complete" ? null : found.goal;
+    // The goal goes on with the chat's next backend: stock pursues it no more.
+    if (goal) await connection.upstream.request("thread/goal/clear", { threadId: source.threadId });
     const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd, model: null, effort: null, fast: false, permissionMode: "default", plan: false }));
     // A backend from its first record on: its transcript is on disk before the lineage lists it.
     this.newBackends.add(session.threadId);
@@ -601,9 +609,15 @@ export class Lineages {
       tell("item/completed", { item, threadId: publicId, turnId, completedAtMs: Date.now() });
       tell("thread/settings/updated", { threadId: publicId, threadSettings: this.gateway.claude.threadSettings(session.settings) });
       connection.provider = "claude";
-      return await this.gateway.claude.handle(connection, "turn/start", { ...params, threadId: session.threadId, turnId });
+      const answer = await this.gateway.claude.handle(connection, "turn/start", { ...params, threadId: session.threadId, turnId });
+      if (goal) {
+        await this.gateway.claude.giveGoal(session.threadId, goal);
+        tell("thread/goal/updated", { threadId: publicId, turnId: null, goal: { ...goal, threadId: publicId } });
+      }
+      return answer;
     } catch (error) {
       await this.gateway.claude.discard(session.threadId);
+      if (goal) await connection.upstream.request("thread/goal/set", { threadId: source.threadId, objective: goal.objective, status: goal.status });
       return failed(turn, error);
     }
   }
@@ -619,7 +633,7 @@ export class Lineages {
 
   private async toCodex(
     connection: Connection, viewers: Connection[], tell: (method: string, notification: JsonObject) => void,
-    publicId: string, segments: Segment[], source: Segment, summary: string, params: JsonObject,
+    publicId: string, segments: Segment[], source: Segment, summary: string, params: JsonObject, goal: JsonObject | null,
   ): Promise<unknown> {
     const settings = this.gateway.claude.settings(source.threadId);
     const permissions = codexPermissions(settings.permissionMode, settings.cwd);
@@ -635,6 +649,8 @@ export class Lineages {
       items: [{ type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n${summary}` }] }],
     });
     this.gateway.meta.setLineage(publicId, [...segments.slice(0, -1), source, { provider: "codex", threadId, lastTurnId: null }]);
+    // Switched away from, Claude runs nothing of the chat on.
+    await this.gateway.claude.retire(source.threadId);
     // The other clients' stock connections load the backend before its first turn, so stock streams it to them too.
     for (const viewer of viewers) {
       if (viewer !== connection) await viewer.upstream.request("thread/resume", { threadId, excludeTurns: true }).catch(() => undefined);
@@ -646,6 +662,7 @@ export class Lineages {
     const name = (await this.thread(this.gateway.meta.row(publicId))).name;
     if (name) await connection.upstream.request("thread/name/set", { threadId, name: name.replace(/\s*✳️$/u, "") }).catch(() => undefined);
     const answer: JsonObject = await connection.upstream.request("turn/start", { ...params, threadId });
+    if (goal) await connection.upstream.request("thread/goal/set", { threadId, objective: goal.objective, status: goal.status });
     const turnId: string = answer.turn.id;
     const item = { type: "contextCompaction", id: `${turnId}:compaction` };
     tell("item/started", { item, threadId: publicId, turnId, startedAtMs: Date.now() });

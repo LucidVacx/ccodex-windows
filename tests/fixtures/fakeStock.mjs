@@ -159,6 +159,25 @@ const handlers = {
   },
   "thread/archive": (_connection, params) => { threads.get(params.threadId).archived = true; broadcast("thread/archived", { threadId: params.threadId }); return {}; },
   "thread/delete": (_connection, params) => { threads.delete(params.threadId); broadcast("thread/deleted", { threadId: params.threadId }); return {}; },
+  // Like stock's goals: one per thread, every subscriber hears of a change.
+  "thread/goal/get": (_connection, params) => ({ goal: threads.get(params.threadId).goal ?? null }),
+  "thread/goal/set": (_connection, params) => {
+    const thread = threads.get(params.threadId);
+    const at = now();
+    thread.goal = {
+      threadId: thread.id, tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0, createdAt: at, status: "active", ...thread.goal,
+      ...(params.objective ? { objective: params.objective, createdAt: at } : {}), ...(params.status ? { status: params.status } : {}), updatedAt: at,
+    };
+    for (const c of thread.subscribers) c.notify("thread/goal/updated", { threadId: thread.id, turnId: null, goal: thread.goal });
+    return { goal: thread.goal };
+  },
+  "thread/goal/clear": (_connection, params) => {
+    const thread = threads.get(params.threadId);
+    const cleared = Boolean(thread.goal);
+    delete thread.goal;
+    if (cleared) for (const c of thread.subscribers) c.notify("thread/goal/cleared", { threadId: thread.id });
+    return { cleared };
+  },
   "thread/unsubscribe": (connection, params) => { threads.get(params.threadId)?.subscribers.delete(connection); return { status: "unsubscribed" }; },
   "turn/start": (connection, params) => {
     const thread = threads.get(params.threadId);
