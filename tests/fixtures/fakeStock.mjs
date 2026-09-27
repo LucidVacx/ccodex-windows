@@ -59,6 +59,9 @@ function runTurn(connection, thread, params) {
   const turn = { id: randomUUID(), items: [], itemsView: "full", status: "inProgress", error: null, startedAt: now(), completedAt: null, durationMs: null };
   const user = { type: "userMessage", id: randomUUID(), clientId: params.clientUserMessageId ?? null, content: params.input };
   const agent = { type: "agentMessage", id: randomUUID(), text: reply(thread, text), phase: "final_answer", memoryCitation: null };
+  // Like stock's image generation: the image is saved under the thread's own directory.
+  const image = text.startsWith("draw ") ? [{ type: "imageGeneration", id: `ig_${randomUUID()}`, status: "completed", revisedPrompt: text.slice(5), result: "",
+    savedPath: `/codex-home/generated_images/${thread.id}/ig.png` }] : [];
   thread.turns.push(turn);
   materialized.add(thread.id);
   if (!thread.preview) thread.preview = text;
@@ -67,7 +70,7 @@ function runTurn(connection, thread, params) {
   later(() => {
     const send = (method, payload) => { for (const c of thread.subscribers) c.notify(method, payload); };
     send("turn/started", { threadId: thread.id, turn: { ...turn, items: [], itemsView: "notLoaded" } });
-    for (const item of [user, agent]) {
+    for (const item of [user, ...image, agent]) {
       send("item/started", { threadId: thread.id, turnId: turn.id, item, startedAtMs: Date.now() });
       send("item/completed", { threadId: thread.id, turnId: turn.id, item, completedAtMs: Date.now() });
       turn.items.push(item);

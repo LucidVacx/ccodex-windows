@@ -172,6 +172,8 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   }
   if (command?.[1] === "goal") {
     await fakeClaude.goalHold;
+    // Like Claude, it records the command a moment after it started running it.
+    await new Promise((resolve) => setTimeout(resolve, 100));
     transcript.write({ type: "user", uuid, message: { role: "user", content: `<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>${command[2]}</command-args>` } });
     const output = command[2] === "clear" ? "Goal cleared" : `Goal set: ${command[2]}`;
     transcript.write({ type: "system", subtype: "local_command", content: `<local-command-stdout>${output}</local-command-stdout>`, commandRun: { command: "goal", args: command[2] } });

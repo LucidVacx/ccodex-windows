@@ -333,7 +333,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     gateway = await startTestGateway({}, meta);
     client = await gateway.connect();
     client.onRequest = (message) => { asked.push(message); return { decision: "accept" }; };
-    await client.request("thread/resume", { threadId });
+    // Like stock's, a resume tells the chat's collaboration mode (Desktop's composer shows plan mode from it).
+    expect(await client.request("thread/resume", { threadId })).toMatchObject({ approvalPolicy: "never", collaborationMode: { mode: "plan", settings: { model: CLAUDE } } });
     await client.request("thread/settings/update", { threadId, collaborationMode: mode("default") });
     await client.turn(threadId, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag; this needs approval", { collaborationMode: mode("default") });
     expect(fakeClaude.options.at(-1)!.permissionMode).toBe("bypassPermissions");
@@ -671,9 +672,9 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     // Claude pursues a goal in one turn and runs a command sent meanwhile only after it: an edit stops that turn first.
     await client.request("thread/goal/set", { threadId, objective: "keep going" });
     await client.waitFor("turn/started", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal keep going");
+    const edited = client.notifications("turn/completed", threadId).length;
     await client.request("thread/goal/set", { threadId, objective: "again" });
-    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal again");
-    expect(client.notifications("turn/completed", threadId).slice(-2).map((message) => message.params.turn.status)).toEqual(["interrupted", "completed"]);
+    await vi.waitFor(() => expect(client.notifications("turn/completed", threadId).slice(edited).map((message) => message.params.turn.status)).toEqual(["interrupted", "completed"]));
     expect(fakeClaude.calls.filter((call) => call.method === "interrupt")).toHaveLength(1);
 
     // Clearing is no turn.
@@ -702,7 +703,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "start");
     await client.request("thread/goal/set", { threadId, objective: "ship it" });
-    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+    await vi.waitFor(async () => expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ status: "active" }), 2_000);
     await client.turn(threadId, "go", { model: "gpt-6-luna" });
     expect(fakeClaude.prompts.map((prompt) => prompt.text)).toContain("/goal clear");
     expect(fakeClaude.calls.filter((call) => call.method === "close").map((call) => call.args[0])).toContain(threadId);
@@ -756,6 +757,17 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await vi.waitFor(async () => expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ status: "active" }), 2_000);
     await client.request("thread/goal/set", { threadId, status: "paused" });
     await vi.waitFor(() => expect(texts().slice(-3)).toEqual(["/goal clear", "/goal keep going\n", "/goal clear"]), 2_000);
+    expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "keep going", status: "paused" });
+  });
+
+  it("pauses a Claude goal set a moment ago: Claude's goal turn stops and the goal stays paused", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "start");
+    await client.request("thread/goal/set", { threadId, objective: "keep going" });
+    await client.waitFor("turn/started", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal keep going");
+    expect((await client.request("thread/goal/set", { threadId, status: "paused" })).goal).toMatchObject({ objective: "keep going", status: "paused" });
+    await client.waitFor("turn/completed", (params) => params.threadId === threadId && params.turn.status === "interrupted");
+    await vi.waitFor(() => expect(fakeClaude.prompts.at(-1)?.text).toBe("/goal clear"));
     expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "keep going", status: "paused" });
   });
 
@@ -1228,6 +1240,32 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       cursor = page.nextCursor;
     } while (cursor);
     expect(items).toEqual(["agent:gpt: three", "user:three"]);
+  });
+
+  it("shows a claude → gpt thread's generated image where stock saved it (its GPT backend's directory)", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one");
+    await client.turn(threadId, "two", { model: "gpt-6-luna" });
+    const backend = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).lineages[threadId].at(-1).threadId;
+    await client.turn(threadId, "draw a red square");
+    const saved = `/codex-home/generated_images/${backend}/ig.png`;
+    expect(client.notifications("item/completed", threadId).find((message) => message.params.item.type === "imageGeneration")!.params.item.savedPath).toBe(saved);
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(thread.turns.at(-1).items.find((item: any) => item.type === "imageGeneration").savedPath).toBe(saved);
+  });
+
+  it("shows the output file Claude names in a gpt → claude thread where Claude writes it (its session's directory)", async () => {
+    const threadId = await stockThread();
+    await client.turn(threadId, "one");
+    await client.turn(threadId, "two", { model: CLAUDE });
+    const backend = JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).lineages[threadId].at(-1).threadId;
+    // Like Claude answering where its background command writes: under the session's own directory.
+    const said = `Output is being written to: /tmp/claude-1000/-work/${backend}/tasks/bg1.output`;
+    fakeClaude.reply = () => said;
+    await client.turn(threadId, "where does the command write?");
+    expect(client.notifications("item/completed", threadId).at(-1)!.params.item.text).toBe(said);
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(thread.turns.at(-1).items.at(-1).text).toBe(said);
   });
 
   it("describes a Claude thread's environment like stock does (Desktop files remote projects' threads by it)", async () => {
