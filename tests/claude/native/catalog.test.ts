@@ -122,6 +122,8 @@ describe("native Claude session catalog", () => {
       const first = new NativeSessionCatalog(temporary.projects, cache);
       await first.refresh();
       await new Promise((resolve) => setTimeout(resolve, 1_200));
+      // Only what the next run parses on from: summaries are rebuilt from it.
+      expect(JSON.parse(await readFile(cache.path, "utf8")).entries[0]).not.toHaveProperty("summary");
       const appended = line({ type: "custom-title", customTitle: "Written while stopped", sessionId: temporary.sessionId });
       await appendFile(temporary.path, appended);
 

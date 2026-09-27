@@ -17,7 +17,7 @@ import { NativeSessionCatalog, type SessionSummary } from "./native/catalog.js";
 import { nativeThread, type TranscriptProjection } from "./native/projector.js";
 import { projectSubagents, type ProjectedSubagent } from "./native/subagents.js";
 import { readTranscriptRecords } from "./native/records.js";
-import { summarizeTranscript, userText, type TranscriptHeader } from "./native/summary.js";
+import { preview, summarizeTranscript, userText, type TranscriptHeader } from "./native/summary.js";
 import { codexPermissions, mapClaudeModel, mapSkill, permissionSettings, withProbeQuery } from "./sdk.js";
 import { killProcesses, sessionProcesses, type SessionProcess } from "./processes.js";
 import { ClaudeSession, type SessionSettings } from "./session.js";
@@ -315,7 +315,7 @@ export class ClaudeThreads {
   public subagentSpawned(session: ClaudeSession, item: JsonObject, running: boolean): void {
     const childId: string = item.receiverThreadIds[0];
     const now = Math.floor(Date.now() / 1000);
-    const header = { ...summarizeTranscript([]), cwd: session.settings.cwd, preview: item.prompt ?? "", model: item.model, createdAt: now, updatedAt: now };
+    const header = { ...summarizeTranscript([]), cwd: session.settings.cwd, preview: preview(item.prompt ?? ""), model: item.model, createdAt: now, updatedAt: now };
     const thread = nativeThread(childId, header, {
       status: { type: "active", activeFlags: [] },
       subagent: { parentThreadId: session.threadId, depth: 1, nickname: `${item.agentsStates[childId].message} [${claudeModelLabel(item.model ?? "Claude")}]` },

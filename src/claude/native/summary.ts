@@ -54,6 +54,11 @@ function hasToolResult(record: UserRecord): boolean {
 }
 
 /** `/name args` for a user-typed slash command record (`<command-name>/goal</command-name>...`). */
+/** A thread's preview: the start of its first prompt (the list shows one line of it; the full text only bloats it). */
+export function preview(text: string): string {
+  return [...text.trim()].slice(0, 100).join("");
+}
+
 export function slashCommand(text: string): string | undefined {
   const name = /^<command-name>(\/[^<]+)<\/command-name>/u.exec(text)?.[1];
   if (!name) return undefined;
@@ -129,7 +134,7 @@ export class TranscriptSummarizer {
     if (record.type === "user") {
       if (!this.state.hasFirstPrompt && startsTurn(record, this.subagentPromptUuid)) {
         const text = userText(record);
-        this.state.preview = (slashCommand(text) ?? text).trim();
+        this.state.preview = preview(slashCommand(text) ?? text);
         this.state.hasFirstPrompt = true;
       }
       if (record.permissionMode !== undefined) this.state.permissionMode = record.permissionMode;

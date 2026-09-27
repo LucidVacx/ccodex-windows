@@ -69,13 +69,23 @@ async function directoryExists(path: string): Promise<boolean> {
   }
 }
 
-function readCache(cache: CatalogCache): Map<string, CatalogEntry> {
+/** A cached entry: its summary is rebuilt from its state. */
+type CachedEntry = Omit<CatalogEntry, "summary">;
+
+function readCache(cache: CatalogCache): Map<string, CachedEntry> {
   try {
-    const file = JSON.parse(readFileSync(cache.path, "utf8")) as { key?: string; entries?: CatalogEntry[] };
+    const file = JSON.parse(readFileSync(cache.path, "utf8")) as { key?: string; entries?: CachedEntry[] };
     return file.key === cache.key && Array.isArray(file.entries) ? new Map(file.entries.map((entry) => [entry.path, entry])) : new Map();
   } catch {
     return new Map();
   }
+}
+
+function summaryOf(file: DiscoveredFile, state: TranscriptSummaryState): SessionSummary {
+  return {
+    ...new TranscriptSummarizer(state).header(),
+    sessionId: file.sessionId, path: file.path, projectKey: file.projectKey, sizeBytes: file.size, hasSubagents: file.hasSubagents,
+  };
 }
 
 async function hashHead(path: string, length: number): Promise<string> {
@@ -91,7 +101,7 @@ async function hashHead(path: string, length: number): Promise<string> {
 
 export class NativeSessionCatalog implements PeerDirectory {
   private readonly projectsDir: string;
-  private entries = new Map<string, CatalogEntry>();
+  private entries = new Map<string, CachedEntry>();
   private entriesBySessionId = new Map<string, CatalogEntry>();
   private projectDirectories = new Set<string>();
   private ordered: readonly SessionSummary[] = [];
@@ -272,7 +282,7 @@ export class NativeSessionCatalog implements PeerDirectory {
     this.cacheWrite = setTimeout(() => {
       this.cacheWrite = undefined;
       const temporary = `${cache.path}.${process.pid}.tmp`;
-      void writeFile(temporary, JSON.stringify({ key: cache.key, entries: [...this.entries.values()] }), { mode: 0o600 })
+      void writeFile(temporary, JSON.stringify({ key: cache.key, entries: [...this.entries.values()].map((entry) => ({ ...entry, summary: undefined })) }), { mode: 0o600 })
         .then(() => rename(temporary, cache.path))
         .catch(() => undefined);
     }, CACHE_WRITE_DELAY_MS);
@@ -329,12 +339,7 @@ export class NativeSessionCatalog implements PeerDirectory {
 
   private async summarize(file: DiscoveredFile): Promise<CatalogEntry> {
     const previous = this.entries.get(file.path);
-    if (previous && previous.mtimeMs === file.mtimeMs && previous.size === file.size) {
-      return {
-        ...previous,
-        summary: { ...previous.summary, hasSubagents: file.hasSubagents },
-      };
-    }
+    if (previous && previous.mtimeMs === file.mtimeMs && previous.size === file.size) return { ...previous, summary: summaryOf(file, previous.state) };
 
     let start = 0;
     let summarizer = new TranscriptSummarizer();
@@ -360,14 +365,7 @@ export class NativeSessionCatalog implements PeerDirectory {
       headLength,
       headHash: await hashHead(file.path, headLength),
       state: summarizer.snapshot(),
-      summary: {
-        ...summarizer.header(),
-        sessionId: file.sessionId,
-        path: file.path,
-        projectKey: file.projectKey,
-        sizeBytes: file.size,
-        hasSubagents: file.hasSubagents,
-      },
+      summary: summaryOf(file, summarizer.snapshot()),
     };
   }
 }
