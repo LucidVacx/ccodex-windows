@@ -37,6 +37,17 @@ function switchTurn(threadId: string, at: number | null): Turn {
   };
 }
 
+/** Stock's `ThreadSettings` of a thread from its `thread/start` response. */
+function stockSettings(started: JsonObject): JsonObject {
+  const { model, reasoningEffort: effort } = started;
+  return {
+    disabledPluginIds: started.disabledPluginIds, cwd: started.cwd, approvalPolicy: started.approvalPolicy, approvalsReviewer: started.approvalsReviewer,
+    sandboxPolicy: started.sandbox, activePermissionProfile: started.activePermissionProfile, model, modelProvider: started.modelProvider,
+    serviceTier: started.serviceTier, effort, summary: null, collaborationMode: { mode: "default", settings: { model, reasoning_effort: effort, developer_instructions: null } },
+    multiAgentMode: started.multiAgentMode, personality: null,
+  };
+}
+
 /** Where a stitched page goes on: a segment and its backend's cursor; `marker`: the segment's switch marker is next. */
 interface PagePosition {
   readonly segment: number;
@@ -119,6 +130,23 @@ export class Lineages {
     return this.newBackends.has(threadId) || this.gateway.meta.hidden(threadId);
   }
 
+  /** A client's request on a stock thread: its stock connection gets the thread's events from a resume (or a request
+   *  that needs one) until it unsubscribes. */
+  public track(connection: Connection, method: string, threadId: string): void {
+    const loaded = this.resumed.get(connection) ?? new Set<string>();
+    this.resumed.set(connection, loaded);
+    if (method === "thread/unsubscribe") loaded.delete(threadId);
+    else if (method === "thread/resume" || !NO_RESUME.has(method)) loaded.add(threadId);
+  }
+
+  /** Clients with the chat open on its current segment (and the one switching it): like stock's turn events, a switch
+   *  goes to all of them. */
+  private viewers(source: Segment, initiator: Connection): Connection[] {
+    const viewing = source.provider === "claude" ? this.gateway.subscribers(source.threadId)
+      : [...this.gateway.connections].filter((connection) => this.resumed.get(connection)?.has(source.threadId));
+    return [...new Set([initiator, ...viewing])];
+  }
+
   /** Holds a new thread's announcement while a switch creates a stock backend; false = deliver it now. */
   public holdAnnouncement(connection: Connection, threadId: string, text: string): boolean {
     if (!this.creatingBackends) return false;
@@ -128,12 +156,12 @@ export class Lineages {
 
   /** Stock announces a new thread to every connection before its creator learns the id: a backend's announcement
    *  is held until then and dropped, or Desktop keeps it as a row that can never open. */
-  private async startBackend(connection: Connection, params: JsonObject): Promise<string> {
+  private async startBackend(connection: Connection, params: JsonObject): Promise<JsonObject> {
     this.creatingBackends += 1;
     try {
       const started: JsonObject = await connection.upstream.request("thread/start", params);
       this.newBackends.add(started.thread.id);
-      return started.thread.id;
+      return started;
     } finally {
       this.creatingBackends -= 1;
       if (!this.creatingBackends) {
@@ -220,12 +248,10 @@ export class Lineages {
       return this.gateway.claude.handle(connection, method, backendParams);
     }
     connection.provider = "codex";
-    const resumed = this.resumed.get(connection) ?? new Set();
-    this.resumed.set(connection, resumed);
-    if (!NO_RESUME.has(method) && !resumed.has(segment.threadId)) {
+    if (!NO_RESUME.has(method) && !this.resumed.get(connection)?.has(segment.threadId)) {
       await connection.upstream.request("thread/resume", { threadId: segment.threadId, excludeTurns: true });
     }
-    if (method === "thread/resume" || !NO_RESUME.has(method)) resumed.add(segment.threadId);
+    this.track(connection, method, segment.threadId);
     return connection.upstream.request(method, backendParams);
   }
 
@@ -495,17 +521,20 @@ export class Lineages {
    * `turn/start` with the other provider's model: summarize the current segment, start a native thread on the
    * other provider with the summary injected, then run the user's turn there. Desktop gives its optimistic message
    * to the first turn that starts, so live the compaction shows only inside the user's turn: under its preallocated
-   * id towards Claude, after stock started it towards codex. On failure the user's turn fails.
+   * id towards Claude, after stock started it towards codex. On failure the user's turn fails. Every client with the
+   * chat open sees it all and gets the new backend's events and settings (Desktop's composer takes the model).
    */
   private async switchProvider(connection: Connection, publicId: string, segments: Segment[], params: JsonObject): Promise<unknown> {
     const source = segments.at(-1)!;
     const now = Math.floor(Date.now() / 1000);
+    const viewers = this.viewers(source, connection);
+    const tell = (method: string, notification: JsonObject) => { for (const viewer of viewers) viewer.notify(method, notification); };
     const failed = (turn: Turn, error: unknown) => {
       const message = `Switching provider failed: ${error instanceof Error ? error.message : String(error)}`;
       this.gateway.logger.warn("lineage.switch.failed", { publicId, error: message });
       const turnError = { message, codexErrorInfo: null, additionalDetails: null };
-      connection.notify("error", { threadId: publicId, turnId: turn.id, willRetry: false, error: turnError });
-      connection.notify("turn/completed", {
+      tell("error", { threadId: publicId, turnId: turn.id, willRetry: false, error: turnError });
+      tell("turn/completed", {
         threadId: publicId,
         turn: { ...turn, items: [], status: "failed", completedAt: Math.floor(Date.now() / 1000), durationMs: Date.now() - now * 1000, error: turnError },
       });
@@ -513,7 +542,8 @@ export class Lineages {
     };
     if (source.provider === "claude") {
       const session = this.gateway.claude.session(source.threadId);
-      this.gateway.unsubscribe(source.threadId, connection);
+      // Its compaction is no turn of the chat: it shows inside the user's turn.
+      for (const viewer of viewers) this.gateway.unsubscribe(source.threadId, viewer);
       let summary = "";
       session.compactSummary = (text) => { summary = text; };
       const turn = await session.command(`/compact ${COMPACT_PROMPT}`);
@@ -533,10 +563,11 @@ export class Lineages {
           }
           lastTurnId = turns.at(-2)!.id;
         }
-        return await this.toCodex(connection, publicId, segments, { ...source, lastTurnId }, summary, params);
+        return await this.toCodex(connection, viewers, tell, publicId, segments, { ...source, lastTurnId }, summary, params);
       } catch (error) {
-        // Desktop only settles its pending message on a turn it saw start.
-        connection.notify("turn/started", { threadId: publicId, turn: startedTurn(turn) });
+        // The chat stays on Claude. Desktop only settles its pending message on a turn it saw start.
+        for (const viewer of viewers) this.gateway.subscribe(source.threadId, viewer);
+        tell("turn/started", { threadId: publicId, turn: startedTurn(turn) });
         return failed(turn, error);
       }
     }
@@ -545,11 +576,12 @@ export class Lineages {
     const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd, model: null, effort: null, fast: false, permissionMode: "default" }));
     // A backend from its first record on: its transcript is on disk before the lineage lists it.
     this.newBackends.add(session.threadId);
+    for (const viewer of viewers) this.gateway.subscribe(session.threadId, viewer);
     const turnId = randomUUID();
     const turn: Turn = { id: turnId, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: now, completedAt: null, durationMs: null };
     const item = { type: "contextCompaction", id: `${turnId}:compaction` };
-    connection.notify("turn/started", { threadId: publicId, turn });
-    connection.notify("item/started", { item, threadId: publicId, turnId, startedAtMs: Date.now() });
+    tell("turn/started", { threadId: publicId, turn });
+    tell("item/started", { item, threadId: publicId, turnId, startedAtMs: Date.now() });
     try {
       const summary = await this.gptSummary(source.threadId);
       const last: JsonObject = await this.gateway.stock.request("thread/turns/list", { threadId: source.threadId, limit: 1, sortDirection: "desc" });
@@ -561,7 +593,8 @@ export class Lineages {
       // Renamed as the lineage's backend: the name reaches clients under the public id.
       const name = (await this.thread(source)).name;
       if (name) await this.gateway.claude.rename(session.threadId, `${name} ✳️`);
-      connection.notify("item/completed", { item, threadId: publicId, turnId, completedAtMs: Date.now() });
+      tell("item/completed", { item, threadId: publicId, turnId, completedAtMs: Date.now() });
+      tell("thread/settings/updated", { threadId: publicId, threadSettings: this.gateway.claude.threadSettings(session.settings) });
       connection.provider = "claude";
       return await this.gateway.claude.handle(connection, "turn/start", { ...params, threadId: session.threadId, turnId });
     } catch (error) {
@@ -579,31 +612,39 @@ export class Lineages {
     }
   }
 
-  private async toCodex(connection: Connection, publicId: string, segments: Segment[], source: Segment, summary: string, params: JsonObject): Promise<unknown> {
+  private async toCodex(
+    connection: Connection, viewers: Connection[], tell: (method: string, notification: JsonObject) => void,
+    publicId: string, segments: Segment[], source: Segment, summary: string, params: JsonObject,
+  ): Promise<unknown> {
     const settings = this.gateway.claude.settings(source.threadId);
     const permissions = codexPermissions(settings.permissionMode, settings.cwd);
-    const threadId = await this.startBackend(connection, {
+    const started = await this.startBackend(connection, {
       model: requestedModel(params), cwd: settings.cwd,
       approvalPolicy: params.approvalPolicy ?? permissions.approvalPolicy,
       approvalsReviewer: params.approvalsReviewer ?? permissions.approvalsReviewer,
       ...(params.permissions || params.sandboxPolicy ? {} : { permissions: permissions.activePermissionProfile.id }),
     });
+    const threadId: string = started.thread.id;
     await connection.upstream.request("thread/inject_items", {
       threadId,
       items: [{ type: "message", role: "user", content: [{ type: "input_text", text: `${SUMMARY_PREFIX}\n${summary}` }] }],
     });
     this.gateway.meta.setLineage(publicId, [...segments.slice(0, -1), source, { provider: "codex", threadId, lastTurnId: null }]);
-    const resumed = this.resumed.get(connection) ?? new Set();
-    resumed.add(threadId);
-    this.resumed.set(connection, resumed);
+    // The other clients' stock connections load the backend before its first turn, so stock streams it to them too.
+    for (const viewer of viewers) {
+      if (viewer !== connection) await viewer.upstream.request("thread/resume", { threadId, excludeTurns: true }).catch(() => undefined);
+      this.track(viewer, "thread/resume", threadId);
+    }
+    // Stock reports a thread's settings only when they change: the backend started with the model switched to.
+    tell("thread/settings/updated", { threadId: publicId, threadSettings: stockSettings(started) });
     connection.provider = "codex";
     const name = (await this.thread(this.gateway.meta.row(publicId))).name;
     if (name) await connection.upstream.request("thread/name/set", { threadId, name: name.replace(/\s*✳️$/u, "") }).catch(() => undefined);
     const answer: JsonObject = await connection.upstream.request("turn/start", { ...params, threadId });
     const turnId: string = answer.turn.id;
     const item = { type: "contextCompaction", id: `${turnId}:compaction` };
-    connection.notify("item/started", { item, threadId: publicId, turnId, startedAtMs: Date.now() });
-    connection.notify("item/completed", { item, threadId: publicId, turnId, completedAtMs: Date.now() });
+    tell("item/started", { item, threadId: publicId, turnId, startedAtMs: Date.now() });
+    tell("item/completed", { item, threadId: publicId, turnId, completedAtMs: Date.now() });
     return answer;
   }
 }

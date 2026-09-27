@@ -115,8 +115,8 @@ export class Gateway {
     this.subscriptions.get(threadId)?.delete(connection);
   }
 
-  public subscribers(threadId: string): number {
-    return this.subscriptions.get(threadId)?.size ?? 0;
+  public subscribers(threadId: string): ReadonlySet<Connection> {
+    return this.subscriptions.get(threadId) ?? new Set();
   }
 
   public emit(threadId: string, method: string, params: unknown): void {
@@ -217,6 +217,7 @@ export class Gateway {
       return (conn, p) => this.claude.handle(conn, method, p);
     }
     if (method === "turn/start" || method === "thread/resume") connection.provider = "codex";
+    this.lineages.track(connection, method, threadId);
     return undefined;
   }
 

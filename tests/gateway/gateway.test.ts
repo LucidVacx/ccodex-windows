@@ -736,6 +736,28 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns)).toEqual(["user:first", "agent:claude: first", "contextCompaction", "user:second, edited", "agent:gpt: second, edited"]);
   });
 
+  // Like stock, every client with a chat open sees the turns another client runs there, and the model it picked.
+  it.each([["gpt → claude", "gpt-6-luna", CLAUDE, "claude"], ["claude → gpt", CLAUDE, "gpt-6-luna", "gpt"]])(
+    "shows a switch %s another client makes to every client with the chat open, and the model it switched to", async (_name, from, to, replier) => {
+      const desktop = await gateway.connect();
+      const { thread } = await desktop.request("thread/start", { model: from, cwd: "/work" });
+      const threadId: string = thread.id;
+      await desktop.turn(threadId, "first", { model: from });
+      await client.request("thread/resume", { threadId });
+      const since = [desktop.messages.length, client.messages.length];
+      await client.turn(threadId, "second", { model: to });
+      await client.turn(threadId, "third", { model: to });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const live = (connection: Client, from: number) => connection.messages.slice(from)
+        .filter((message) => message.params?.threadId === threadId && /^(?:turn\/started|turn\/completed|item\/completed)$/u.test(message.method))
+        .map((message) => `${message.method} ${message.params.turn?.id ?? message.params.turnId} ${message.params.item?.type ?? ""} ${message.params.item?.text ?? ""}`)
+        .sort();
+      expect(live(desktop, since[0]!)).toEqual(live(client, since[1]!));
+      expect(live(desktop, since[0]!).filter((entry) => entry.includes("agentMessage")).map((entry) => entry.split(" agentMessage ")[1]))
+        .toEqual(expect.arrayContaining([`${replier}: second`, `${replier}: third`]));
+      expect(desktop.notifications("thread/settings/updated", threadId).at(-1)?.params.threadSettings.model).toBe(to);
+    });
+
   // The live matrix (experiments/2026_09_23_thin_rewrite/scripts/edit_switch.mjs): a step is a turn, an edit of
   // turn N (Desktop: revert before it, then the step after it sends the new text) or a fork at turn N.
   type Step = { model: string; text: string } | { revert: number } | { fork: number; model: string; text: string };

@@ -324,6 +324,33 @@ const scenarios = {
   },
 
   /**
+   * A chat open in Desktop switched by another client (a script, the TUI, a phone): like stock, Desktop sees the switch
+   * turn and the next ones live, and its composer gets the model switched to (its next message stays on that provider).
+   */
+  async switchBySecondClient() {
+    const second = await Client.connect();
+    const run = async (from, to) => {
+      const { thread } = await client.request("thread/start", { model: from, cwd: WORK });
+      await client.turn(thread.id, "Reply with exactly: ONE", { model: from });
+      await second.request("thread/resume", { threadId: thread.id });
+      const since = client.messages.length;
+      const turns = [await second.turn(thread.id, "Reply with exactly: TWO", { model: to }, 400_000), await second.turn(thread.id, "Reply with exactly: THREE", { model: to })];
+      await sleep(1_000);
+      const seen = client.messages.slice(since).filter((m) => m.method === "turn/completed" && m.params.threadId === thread.id).map((m) => m.params.turn.id);
+      const said = answers(client, thread.id, since);
+      const settings = client.messages.slice(since).filter((m) => m.method === "thread/settings/updated" && m.params.threadId === thread.id).at(-1)?.params.threadSettings;
+      const detail = { seen, ran: turns.map((turn) => turn.turn.id), said, model: settings?.model };
+      check(JSON.stringify(seen) === JSON.stringify(detail.ran), `${from} → ${to}: Desktop saw the other client's turns complete`, detail);
+      check(said.join(" ").includes("TWO") && said.join(" ").includes("THREE"), `${from} → ${to}: Desktop saw the answers`, detail);
+      check(settings?.model === to, `${from} → ${to}: Desktop's composer got the model`, detail);
+      return detail;
+    };
+    const result = { toClaude: await run(GPT, state.haiku), toGpt: await run(state.haiku, GPT) };
+    second.close();
+    return result;
+  },
+
+  /**
    * An upgrade from 0.4 (issue #36): codex installed by npm into ~/.local (its `bin/codex` is a relative link), set up
    * by ccodex 0.4.25, then by this build, in a home of its own.
    */

@@ -164,7 +164,7 @@ export class ClaudeThreads {
       if (session.waitingOnTasks && pids?.length) {
         this.act(session, "claude.tasks.hung", `stopped its background tasks: their commands used no CPU for ${idle}`, pids);
         void session.stopTasks().catch(() => killProcesses(pids));
-      } else if (session.quiet(now, IDLE_MS) && !this.gateway.subscribers(session.threadId)) {
+      } else if (session.quiet(now, IDLE_MS) && !this.gateway.subscribers(session.threadId).size) {
         this.act(session, "claude.unloaded", `unloaded the chat: nobody had it open and it was quiet for ${idle}`, pids);
         this.sessions.delete(session.threadId);
         void session.unload().then(() => killProcesses(pids ?? []));
