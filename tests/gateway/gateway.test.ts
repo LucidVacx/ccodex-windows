@@ -700,8 +700,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(row.preview).toBe(prompt.slice(0, 100));
     const found = async (searchTerm: string) => (await client.request("thread/search", { searchTerm, limit: 50 })).data
       .find((result: any) => result.thread.id === threadId)?.snippet;
-    // Stock's snippet: up to 60 characters around the match, whitespace collapsed; any case; names are not searched.
-    expect(await found("NEEDLE")).toBe(`...${"x ".repeat(30)}needle ${"y".repeat(59)}...`);
+    // Stock's snippet: 49 characters before the match and 96 after, whitespace collapsed; any case; names are not searched.
+    expect(await found("NEEDLE")).toBe(`... ${"x ".repeat(24)}needle ${"y".repeat(95)} ...`);
     expect(await found("haystack")).toBeUndefined();
   });
 

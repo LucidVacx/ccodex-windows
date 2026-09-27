@@ -5,16 +5,18 @@ import { createInterface } from "node:readline";
 import { parseTranscriptLine } from "./records.js";
 import { slashCommand, startsTurn, userText } from "./summary.js";
 
-const CONTEXT = 60;
-
-/** Stock's snippet: the match with up to 60 characters around it, whitespace collapsed. */
+/** Stock's snippet (codex-rs/rollout/src/search.rs `excerpt_around_match`): whitespace collapsed, the match with the
+ *  49 characters before it and 96 after, "... " / " ..." where the text goes on. */
 export function snippet(text: string, term: string): string | undefined {
-  const flat = text.replace(/\s+/gu, " ").trim();
+  const flat = text.split(/\s+/u).filter(Boolean).join(" ");
   const at = flat.toLowerCase().indexOf(term);
   if (at < 0) return undefined;
-  const start = Math.max(0, at - CONTEXT);
-  const end = Math.min(flat.length, at + term.length + CONTEXT);
-  return `${start > 0 ? "..." : ""}${flat.slice(start, end)}${end < flat.length ? "..." : ""}`;
+  const before = [...flat.slice(0, at)];
+  const after = [...flat.slice(at + term.length)];
+  const start = Math.max(0, before.length - 49);
+  const cut = after.length > 96;
+  const excerpt = `${before.slice(start).join("")}${flat.slice(at, at + term.length)}${after.slice(0, 96).join("")}`.trim();
+  return `${start > 0 ? "... " : ""}${excerpt}${cut ? " ..." : ""}`;
 }
 
 function visibleText(line: string): string | undefined {
