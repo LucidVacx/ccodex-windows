@@ -221,7 +221,6 @@ const meta = {
   archived: [...new Set([...archived, ...(existing.archived ?? [])])],
   sections: { ...sections, ...existing.sections },
   sectionOrder: { ...sectionOrder, ...existing.sectionOrder },
-  leaves: existing.leaves ?? {},
 };
 
 log(`lineages: ${Object.keys(lineages).length}, skipped ${skipped}`);

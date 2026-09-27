@@ -164,6 +164,10 @@ keep working):
   newline-delimited JSON to the existing app-server-control socket, lazily starts the
   gateway when cold, and reconnects after gateway restarts. Provider state and lifecycle
   remain exclusively inside the existing gateway.
+- A gateway started otherwise (from a terminal, or for an earlier App launch) is replaced
+  at once by one the frontend starts: the App lets only processes under it use its
+  browser (Browser Use), and that gateway runs with the App's environment. Chats running
+  in the old gateway stop, as the App's own chats stop when it quits.
 - There is **no extra macOS gateway service**. The same PID-managed gateway used over SSH
   starts lazily when the App connects and stops through the existing daemon contract.
   Setup/update/rollback only switch files and ask you to reconnect; they never restart a

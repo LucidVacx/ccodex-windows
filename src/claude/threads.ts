@@ -57,6 +57,9 @@ export class ClaudeThreads {
   private readonly sides = new Map<string, SideThread>();
   /** `agent-<id>` sub-agent thread → the native session whose transcript directory holds it. */
   private readonly subagentRoots = new Map<string, string>();
+  /** Threads rolled back but not continued yet: their kept history ends at this record. A restart meanwhile shows
+   *  the rolled-back messages again. */
+  private readonly leaves = new Map<string, string>();
   /** Sub-agents spawned live, shown until Claude has written their transcript. */
   private readonly spawnedSubagents = new Map<string, Thread>();
   /** Context window of each Claude model, as its sessions report it. */
@@ -267,7 +270,7 @@ export class ClaudeThreads {
   private async projection(threadId: string): Promise<TranscriptProjection | undefined> {
     if (!this.catalog.get(threadId)) await this.catalog.refresh();
     if (!this.catalog.get(threadId)) return undefined;
-    return this.catalog.projection(threadId, this.gateway.meta.leaf(threadId));
+    return this.catalog.projection(threadId, this.leaves.get(threadId));
   }
 
   private subagentRoot(threadId: string): string | undefined {
@@ -429,7 +432,7 @@ export class ClaudeThreads {
   }
 
   private pages(threadId: string): ReturnType<NativeSessionCatalog["pages"]> {
-    return this.catalog.pages(threadId, this.gateway.meta.leaf(threadId));
+    return this.catalog.pages(threadId, this.leaves.get(threadId));
   }
 
   /** The running turn is the newest one, before Claude writes any of it too (a turn it goes on in after an answer). */
@@ -571,7 +574,7 @@ export class ClaudeThreads {
     let session = this.sessions.get(threadId);
     if (session) return session;
     if (!this.catalog.get(threadId)) throw invalidParams(`thread not found: ${threadId}`);
-    const leaf = this.gateway.meta.leaf(threadId);
+    const leaf = this.leaves.get(threadId);
     session = new ClaudeSession(this, threadId, this.settings(threadId), { exists: true, ...(leaf ? { resumeAt: leaf } : {}) });
     this.sessions.set(threadId, session);
     return session;
@@ -579,7 +582,7 @@ export class ClaudeThreads {
 
   /** The session continued from the rollback leaf: its new records end the history from now on. */
   public resumedAtLeaf(threadId: string): void {
-    this.gateway.meta.setLeaf(threadId, null);
+    this.leaves.delete(threadId);
   }
 
   public turnCompleted(session: ClaudeSession, turnId: string): void {
@@ -1048,7 +1051,7 @@ export class ClaudeThreads {
     }
     const upTo = params.lastTurnId ? await this.boundaryBefore(sourceId, params.lastTurnId, true)
       : params.beforeTurnId ? await this.boundaryBefore(sourceId, params.beforeTurnId, false)
-        : this.gateway.meta.leaf(sourceId) ?? null;
+        : this.leaves.get(sourceId) ?? null;
     const summary = this.catalog.get(sourceId);
     if (!summary) throw invalidParams(`thread not found: ${sourceId}`);
     const { sessionId } = await forkSession(sourceId, { ...(upTo ? { upToMessageId: upTo } : {}) });
@@ -1070,7 +1073,7 @@ export class ClaudeThreads {
     await session?.unload();
     this.sessions.delete(threadId);
     if (leaf) {
-      this.gateway.meta.setLeaf(threadId, leaf);
+      this.leaves.set(threadId, leaf);
       return;
     }
     // Everything rolled back: Claude neither resumes nor starts anew a transcript without messages, so the session
@@ -1078,7 +1081,7 @@ export class ClaudeThreads {
     const name = this.catalog.get(threadId)!.customTitle;
     await deleteSession(threadId);
     this.catalog.dropPages(threadId);
-    this.gateway.meta.setLeaf(threadId, null);
+    this.leaves.delete(threadId);
     await this.catalog.refresh();
     this.sessions.set(threadId, new ClaudeSession(this, threadId, settings, { exists: false }));
     if (name) this.pendingNames.set(threadId, name);

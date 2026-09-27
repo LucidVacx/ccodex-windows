@@ -27,6 +27,7 @@ writeFileSync(published, JSON.stringify({
   pid: process.pid,
   processStartTime: processStartTime(process.pid),
   wrapperPath: reservation.wrapperPath,
+  desktop: reservation.desktop,
 }), { mode: 0o600 });
 renameSync(published, pidFile);
 chmodSync(pidFile, 0o600);

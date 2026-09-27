@@ -168,6 +168,24 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     await runDaemonCommand(config, { command: "stop", remoteControl: false }, fixture);
   }, 20_000);
 
+  it("replaces a gateway another Desktop launch or a terminal started once a Desktop frontend starts it", async () => {
+    const { config, home } = harness();
+    const run = (desktop?: string) => runDaemonCommand(config, { command: "start", remoteControl: false, desktop }, fixture);
+    const pidFile = join(home, "app-server-daemon", "app-server.pid");
+    const terminal = wire(await run());
+    expect(JSON.parse(readFileSync(pidFile, "utf8")).desktop).toBeUndefined();
+    const desktop = wire(await run("/tmp/codex-browser-use/a.sock"));
+    expect(desktop.status).toBe("started");
+    expect(alive(terminal.pid as number)).toBe(false);
+    expect(JSON.parse(readFileSync(pidFile, "utf8"))).toMatchObject({ pid: desktop.pid, desktop: "/tmp/codex-browser-use/a.sock" });
+    // Its other frontends and a terminal keep it; the next launch replaces it.
+    expect(wire(await run("/tmp/codex-browser-use/a.sock")).status).toBe("alreadyRunning");
+    expect(wire(await run()).status).toBe("alreadyRunning");
+    const next = wire(await run("/tmp/codex-browser-use/b.sock"));
+    expect(next.pid).not.toBe(desktop.pid);
+    await runDaemonCommand(config, { command: "stop", remoteControl: false }, fixture);
+  }, 20_000);
+
   it("replaces an unmanaged gateway that wins the readiness race", async () => {
     const { config, home, record } = harness();
     process.env.FAKE_DAEMON_HANDOFF = "1";

@@ -22,8 +22,6 @@ export interface MetaData {
   sections: Record<string, { sectionId: string; enteredAt: number }>;
   /** Manual order inside a section, merged over stock and Claude threads (only once it was changed). */
   sectionOrder: Record<string, string[]>;
-  /** Claude threads rolled back but not continued yet: the kept history ends at this record. */
-  leaves: Record<string, string>;
   /** Default model, effort and speed the App picked while its default model is a Claude one, by config key (never
    *  written to Codex's config.toml). */
   claudeDefaults?: Record<string, unknown> | null;
@@ -42,7 +40,7 @@ export class Meta {
     const raw = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Partial<MetaData> : {};
     this.data = {
       lineages: raw.lineages ?? {}, archived: raw.archived ?? [], sections: raw.sections ?? {},
-      sectionOrder: raw.sectionOrder ?? {}, leaves: raw.leaves ?? {}, claudeDefaults: raw.claudeDefaults ?? null,
+      sectionOrder: raw.sectionOrder ?? {}, claudeDefaults: raw.claudeDefaults ?? null,
     };
     this.reindex();
   }
@@ -128,29 +126,18 @@ export class Meta {
     this.save();
   }
 
-  public leaf(threadId: string): string | undefined { return this.data.leaves[threadId]; }
-
-  public setLeaf(threadId: string, uuid: string | null): void {
-    if (uuid) this.data.leaves[threadId] = uuid;
-    else if (this.data.leaves[threadId]) delete this.data.leaves[threadId];
-    else return;
-    this.save();
-  }
-
   public forget(threadId: string): void {
     this.data.archived = this.data.archived.filter((id) => id !== threadId);
     delete this.data.sections[threadId];
-    delete this.data.leaves[threadId];
     this.save();
   }
 
   /** Archive flag, section and order of a thread listed under another id from now on. */
   private rename(from: string, to: string): void {
     this.data.archived = this.data.archived.map((id) => id === from ? to : id);
-    for (const record of [this.data.sections, this.data.leaves] as Record<string, unknown>[]) {
-      if (!(from in record)) continue;
-      record[to] = record[from];
-      delete record[from];
+    if (from in this.data.sections) {
+      this.data.sections[to] = this.data.sections[from]!;
+      delete this.data.sections[from];
     }
     for (const order of Object.values(this.data.sectionOrder)) order.forEach((id, index) => { if (id === from) order[index] = to; });
   }
