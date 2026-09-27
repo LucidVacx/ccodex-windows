@@ -390,8 +390,16 @@ export class Lineages {
   private async stitchedItems(segments: readonly Segment[], params: JsonObject): Promise<unknown> {
     const index = await this.segmentOf(segments, params.turnId);
     const segment = segments[index]!;
-    if (params.turnId.startsWith("switch:")) return paginateItems([switchTurn(segment.threadId, null)], params);
     const anchorSegment = params.cursor ? cursorSegment(params.cursor) : undefined;
+    if (params.turnId.startsWith("switch:")) {
+      // Desktop pages every turn from the thread-wide items cursor: another turn's anchor only says which side the marker is on.
+      const marker = [switchTurn(segment.threadId, null)];
+      if (!params.cursor || params.cursor.includes(marker[0]!.items[0]!.id)) return paginateItems(marker, params);
+      const newer = (anchorSegment ?? index) >= index; // the marker is its segment's oldest entry
+      return newer === ((params.sortDirection ?? "asc") === "desc")
+        ? paginateItems(marker, { ...params, cursor: null })
+        : { data: [], nextCursor: null, backwardsCursor: null };
+    }
     let cursor = params.cursor ? ownCursor(params.cursor) : null;
     if (anchorSegment !== undefined && anchorSegment !== index) {
       if (anchorSegment > index !== ((params.sortDirection ?? "asc") === "desc")) return { data: [], nextCursor: null, backwardsCursor: null };

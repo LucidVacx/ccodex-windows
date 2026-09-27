@@ -924,6 +924,22 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(done.turn.error.message).toContain("spawn claude EAGAIN");
   });
 
+  it("opens a freshly switched thread like Desktop: every turn of the first page paged from resume's items cursor", async () => {
+    const threadId = await stockThread();
+    await client.turn(threadId, "first");
+    await client.request("turn/start", { threadId, model: CLAUDE, input: text("second") });
+    await client.waitFor("item/completed", (params) => params.threadId === threadId && params.item.text === "claude: second");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const resumed = await client.request("thread/resume", { threadId, excludeTurns: true });
+    const page = await client.request("thread/turns/list", { threadId, cursor: resumed.turnsBackwardsCursor, limit: 5, itemsView: "notLoaded", sortDirection: "desc" });
+    const items: string[][] = [];
+    for (const turn of page.data) {
+      const found = await client.request("thread/items/list", { threadId, turnId: turn.id, cursor: resumed.itemsBackwardsCursor, limit: 100, sortDirection: "desc" });
+      items.push(found.data.map((entry: any) => entry.item.type));
+    }
+    expect(items).toEqual([["agentMessage", "userMessage"], ["contextCompaction"], ["agentMessage", "userMessage"]]);
+  });
+
   it("switches gpt → claude: summary from an ephemeral fork, injected without a reply", async () => {
     const threadId = await stockThread();
     await client.turn(threadId, "first");
