@@ -73,8 +73,8 @@ export function startsTurn(record: UserRecord, subagentPromptUuid?: string): boo
   if (record.origin !== undefined || !userText(record)) return false;
   const text = userText(record);
   const command = slashCommand(text);
-  // The SDK's setModel records a model switch as `/model <name>`: a setting, not a turn.
-  if (command) return !/^\/model(?:\s|$)/u.test(command);
+  // The SDK's setModel records a model switch as `/model <name>`: a setting, not a turn; so is clearing a goal.
+  if (command) return !/^\/(?:model(?:\s|$)|goal clear$)/u.test(command);
   return !/<command-name>|<command-message>|<command-args>|<local-command-[^>]*>|<task-notification>/u.test(text)
     && !text.startsWith("[Injected model-visible history]")
     && !/^\[Request interrupted by user(?: for tool use)?\]$/u.test(text);

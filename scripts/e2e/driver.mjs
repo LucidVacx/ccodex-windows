@@ -454,19 +454,58 @@ const scenarios = {
     return { after: itemsOf(read.turns), rollbackTurns: result.thread.turns.length, answers: done.answers };
   },
 
+  /** Desktop's goal actions on a Claude chat: set → met, pause (refused), edit and clear while Claude pursues a goal. */
   async goal() {
+    const dir = join(WORK, "goal-e2e");
     const { thread } = await client.request("thread/start", { model: state.haiku, cwd: WORK });
-    await client.turn(thread.id, "Reply only with OK.");
+    const threadId = thread.id;
+    await client.turn(threadId, "Reply only with OK.");
     const since = client.messages.length;
-    const set = await client.request("thread/goal/set", { threadId: thread.id, objective: "Reply with the single word GOAL-DONE." });
+    const after = (method, predicate, from, ms = 240_000) => client.waitFor(method, (p) => p.threadId === threadId && predicate(p), ms, from);
+    // Desktop: set, then clear once the goal is reported complete.
+    let from = client.messages.length;
+    const set = await client.request("thread/goal/set", { threadId, objective: `The file ${dir}/a.txt exists and contains the letter A.`, status: "active" });
     check(set.goal?.status === "active", "goal set", set);
-    await client.waitFor("thread/goal/updated", (p) => p.threadId === thread.id, 120_000, since);
-    await client.waitFor("turn/completed", (p) => p.threadId === thread.id, 240_000, since);
-    const got = await client.request("thread/goal/get", { threadId: thread.id });
-    await client.request("thread/goal/clear", { threadId: thread.id });
-    await sleep(3000);
-    const cleared = await client.request("thread/goal/get", { threadId: thread.id });
-    return { set: set.goal, got: got.goal, cleared: cleared.goal, answers: answers(client, thread.id, since) };
+    const met = await after("thread/goal/updated", (p) => p.goal.status === "complete", from);
+    check(met.turnId, "completion names its turn", met);
+    check((await client.request("thread/goal/clear", { threadId })).cleared === true, "completed goal cleared");
+    check((await client.request("thread/goal/get", { threadId })).goal === null, "no goal after clear");
+    // A goal Claude keeps pursuing: pause is refused (the goal stays active), an edit replaces it.
+    const long = (name) => `Files ${dir}/${name}1.txt through ${dir}/${name}40.txt exist, each containing its number. Create exactly ONE file per turn, then end the turn.`;
+    from = client.messages.length;
+    await client.request("thread/goal/set", { threadId, objective: long("n"), status: "active" });
+    await after("item/completed", (p) => p.item.type === "fileChange", from);
+    const paused = await client.request("thread/goal/set", { threadId, status: "paused" });
+    check(paused.goal?.status === "active" && paused.goal.objective === long("n"), "pause keeps the goal active", paused);
+    const refusal = await after("error", () => true, from, 10_000);
+    check(/Pausing goals isn't supported for Claude models/u.test(refusal.error.message), "pause refusal shown", refusal);
+    from = client.messages.length;
+    await client.request("thread/goal/set", { threadId, objective: `The file ${dir}/done.txt exists and contains DONE.`, status: "active" });
+    const stopped = await after("turn/completed", () => true, from, 60_000);
+    check(stopped.turn.status === "interrupted", "an edit stops the running goal turn", stopped);
+    const edited = await after("thread/goal/updated", (p) => p.goal.status === "complete", from);
+    check(edited.goal.objective.includes("done.txt"), "the edited goal is the one met", edited);
+    check(existsSync(join(dir, "done.txt")), "done.txt written");
+    await client.request("thread/goal/clear", { threadId });
+    // Clear while Claude pursues a goal: the turn stops, no turn follows, Claude's goal is gone.
+    from = client.messages.length;
+    await client.request("thread/goal/set", { threadId, objective: long("m"), status: "active" });
+    await after("item/completed", (p) => p.item.type === "fileChange", from);
+    const clearedAt = client.messages.length;
+    check((await client.request("thread/goal/clear", { threadId })).cleared === true, "running goal cleared");
+    const cut = await after("turn/completed", () => true, clearedAt, 60_000);
+    check(cut.turn.status === "interrupted", "clear stops the running goal turn", cut);
+    await sleep(8000);
+    const later = client.messages.slice(clearedAt).filter((m) => m.method === "turn/started" && m.params.threadId === threadId);
+    check(later.length === 0, "no turn after clear", later);
+    check((await client.request("thread/goal/get", { threadId })).goal === null, "no goal after clearing a running one");
+    // No "Goal set: …" / "No goal set" in the chat, live or in history; history has the turns the chat saw.
+    const history = await client.request("thread/read", { threadId, includeTurns: true });
+    const said = [...answers(client, threadId, since), ...history.thread.turns.flatMap((turn) => turn.items).filter((item) => item.type === "agentMessage").map((item) => item.text)];
+    check(!said.some((line) => /^(?:Goal set: |Goal cleared|No goal set)/u.test(line)), "no goal notices in the chat", said.filter((line) => /goal/iu.test(line)));
+    const liveCount = client.messages.filter((m) => m.method === "turn/started" && m.params.threadId === threadId).length;
+    check(history.thread.turns.length === liveCount, "history has the live turns", { history: history.thread.turns.length, live: liveCount });
+    return { turns: liveCount, files: readdirSync(dir).length };
   },
 
   async side() {

@@ -567,8 +567,7 @@ function projectTurns(
     const end = starts[turnIndex + 1]?.index ?? records.length;
     const turnRecords = records.slice(start, end);
     const input = prompt ? userInputs(prompt) : [];
-    const hiddenCommand = input.length === 1 && input[0]?.type === "text"
-      && /^\/(?:compact(?:\s|$)|goal clear$)/u.test(input[0].text);
+    const hiddenCommand = input.length === 1 && input[0]?.type === "text" && /^\/compact(?:\s|$)/u.test(input[0].text);
     const peer = peerOrigin(prompt?.origin);
     const items: ThreadItem[] = peer ? [peerMessageItem(prompt!.uuid, peer, userText(prompt!), peers)]
       : hiddenCommand || !prompt ? []
@@ -597,7 +596,8 @@ function projectTurns(
         items.push({ type: "userMessage", id: record.uuid, clientId: null, content: userInputs(record) });
       } else if (record.type === "system" && record.subtype === "local_command" && typeof record.content === "string") {
         const text = record.content.replace(/<\/?local-command-std(?:out|err)>/gu, "").trim();
-        if (text) items.push({ type: "agentMessage", id: record.uuid, text, phase: "commentary", memoryCitation: null });
+        // Claude's own word on `/goal` ("Goal set: …"): Codex clients show goals themselves.
+        if (text && record.commandRun?.command !== "goal") items.push({ type: "agentMessage", id: record.uuid, text, phase: "commentary", memoryCitation: null });
       } else if (isCompactBoundary(record)) items.push({ type: "contextCompaction", id: record.uuid });
       else if (record.type === "attachment") {
         // A message sent mid-turn: Claude folds it into the running turn.

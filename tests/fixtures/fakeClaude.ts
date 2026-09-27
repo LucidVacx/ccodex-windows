@@ -85,6 +85,8 @@ class Transcript {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Ends the goal Claude is pursuing (an interrupt does). */
+let stopGoal: (() => void) | undefined;
 
 /** Codex answering an MCP call: it journals the turn under $CODEX_HOME/sessions like `codex mcp-server`. */
 function codexJournal(prompt: string): string {
@@ -129,11 +131,11 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   fakeClaude.prompts.push({ sessionId, uuid, text, shouldQuery: prompt.shouldQuery !== false });
   yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "running" });
   yield base(sessionId, { type: "command_lifecycle", state: "started", command_uuid: uuid });
-  const finish = function* (result: string): Generator<Message> {
+  const finish = function* (result: string, subtype = "success"): Generator<Message> {
     // Like the CLI's after each API answer: no `utilization`, the plan windows in `unifiedWindows`.
     yield base(sessionId, { type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790539800, rateLimitType: "five_hour", isUsingOverage: false,
       unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1790539800 }, seven_day: { utilization: 0.06, resetsAt: 1791082800 } } } });
-    yield base(sessionId, { type: "result", subtype: "success", is_error: false, result, total_cost_usd: 0.01, user_message_uuids: [uuid], modelUsage: { "claude-opus-5-5": { contextWindow: 200_000 } } });
+    yield base(sessionId, { type: "result", subtype, is_error: false, result, total_cost_usd: 0.01, user_message_uuids: [uuid], modelUsage: { "claude-opus-5-5": { contextWindow: 200_000 } } });
     yield base(sessionId, { type: "command_lifecycle", state: "completed", command_uuid: uuid });
     yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "idle" });
   };
@@ -169,7 +171,18 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     transcript.write({ type: "user", uuid, message: { role: "user", content: `<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>${command[2]}</command-args>` } });
     const output = command[2] === "clear" ? "Goal cleared" : `Goal set: ${command[2]}`;
     transcript.write({ type: "system", subtype: "local_command", content: `<local-command-stdout>${output}</local-command-stdout>`, commandRun: { command: "goal", args: command[2] } });
-    yield base(sessionId, { type: "system", subtype: "local_command_output", content: output });
+    // Like Claude, its word on the command comes as a reply of its own.
+    yield base(sessionId, {
+      type: "assistant", message: { id: randomUUID(), role: "assistant", model: "<synthetic>", content: [{ type: "text", text: output }] },
+      parent_tool_use_id: null, local_command_run: { command: "goal", args: command[2] },
+    });
+    // Like Claude: it pursues a goal in the same turn until it is met (this one: until interrupted).
+    if (command[2] === "keep going") {
+      await new Promise<void>((resolve) => { stopGoal = resolve; });
+      transcript.write({ type: "user", message: { role: "user", content: "[Request interrupted by user]" } });
+      yield* finish("", "error_during_execution");
+      return;
+    }
     yield* finish("");
     return;
   }
@@ -427,7 +440,11 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
       rate_limits: fakeClaude.usageDown ? null : { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 3, resets_at: null }, seven_day_opus: null, model_scoped: [{ display_name: "Fable", utilization: 40, resets_at: null }] },
     }),
     askSideQuestion: (question: string) => Promise.resolve({ response: `side: ${question}` }),
-    interrupt: record("interrupt"),
+    interrupt: (...args: unknown[]) => {
+      stopGoal?.();
+      stopGoal = undefined;
+      return record("interrupt")(...args);
+    },
     // Like Claude with CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000: Haiku's own window is smaller.
     getContextUsage: () => Promise.resolve({ maxTokens: String(options.model).includes("haiku") ? 200_000 : 400_000 }),
     setModel: (model: string) => {

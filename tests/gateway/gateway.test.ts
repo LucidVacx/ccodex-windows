@@ -552,6 +552,15 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "ship it", status: "active" });
     expect(fakeClaude.prompts.map((prompt) => prompt.text)).toContain("/goal ship it");
 
+    // Claude has no pause (Desktop pauses before it stops a turn too): the goal stays active and the chat says why.
+    const lastTurn = client.notifications("turn/completed", threadId).at(-1)!.params.turn.id;
+    const sent = fakeClaude.prompts.length;
+    expect((await client.request("thread/goal/set", { threadId, status: "paused" })).goal).toMatchObject({ objective: "ship it", status: "active" });
+    const refusal = await client.waitFor("error", (params) => params.threadId === threadId);
+    expect(refusal).toMatchObject({ turnId: lastTurn, willRetry: false, error: { message: "Pausing goals isn't supported for Claude models: the goal stays active." } });
+    expect((await client.request("thread/goal/set", { threadId, status: "active" })).goal).toMatchObject({ objective: "ship it", status: "active" });
+    expect(fakeClaude.prompts).toHaveLength(sent);
+
     // Claude drops a met goal: reported complete once, then Desktop's clear sends Claude nothing.
     await client.turn(threadId, "this meets the goal: ship it");
     await client.waitFor("thread/goal/updated", (params) => params.threadId === threadId && params.goal.status === "complete");
@@ -560,16 +569,34 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(fakeClaude.prompts).toHaveLength(prompts);
     expect((await client.request("thread/goal/get", { threadId })).goal).toBeNull();
 
+    // Claude pursues a goal in one turn and runs a command sent meanwhile only after it: an edit stops that turn first.
+    await client.request("thread/goal/set", { threadId, objective: "keep going" });
+    await client.waitFor("turn/started", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal keep going");
     await client.request("thread/goal/set", { threadId, objective: "again" });
     await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal again");
+    expect(client.notifications("turn/completed", threadId).slice(-2).map((message) => message.params.turn.status)).toEqual(["interrupted", "completed"]);
+    expect(fakeClaude.calls.filter((call) => call.method === "interrupt")).toHaveLength(1);
+
+    // Clearing is no turn.
+    const turns = client.notifications("turn/started", threadId).length;
+    const clearedAt = client.messages.length;
+    expect(await client.request("thread/goal/clear", { threadId })).toEqual({ cleared: true });
+    await vi.waitFor(() => expect(fakeClaude.prompts.at(-1)?.text).toBe("/goal clear"));
+    expect(client.messages.slice(clearedAt).filter((message) => message.method === "thread/goal/cleared")).toHaveLength(1);
     await new Promise((resolve) => setTimeout(resolve, 300));
-    await client.request("thread/goal/clear", { threadId });
-    expect(fakeClaude.prompts.at(-1)?.text).toBe("/goal clear");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(client.notifications("turn/started", threadId)).toHaveLength(turns);
     expect((await client.request("thread/goal/get", { threadId })).goal).toBeNull();
+    expect(await client.request("thread/goal/clear", { threadId })).toEqual({ cleared: false });
+
+    // Claude's own word on its goal ("Goal set: …", "Goal cleared: …") is no chat message, live or in history.
     const history = await client.request("thread/read", { threadId, includeTurns: true });
-    const texts = history.thread.turns.flatMap((t: any) => t.items).filter((item: any) => item.type === "userMessage").map((item: any) => item.content[0].text);
-    expect(texts).toEqual(["start", "/goal ship it", "this meets the goal: ship it", "/goal again"]);
+    const historyItems = history.thread.turns.flatMap((t: any) => t.items);
+    const texts = historyItems.filter((item: any) => item.type === "userMessage").map((item: any) => item.content[0].text);
+    expect(texts).toEqual(["start", "/goal ship it", "this meets the goal: ship it", "/goal keep going", "/goal again"]);
+    const said = [...historyItems, ...client.notifications("item/completed", threadId).map((message) => message.params.item)]
+      .filter((item: any) => item.type === "agentMessage").map((item: any) => item.text);
+    expect(said.filter((text: string) => /Goal (?:set|cleared)|No goal/u.test(text))).toEqual([]);
+    expect(history.thread.turns).toHaveLength(turns);
   });
 
   it("keeps the latest name of a new Claude thread (a name set before its first message waits for it)", async () => {

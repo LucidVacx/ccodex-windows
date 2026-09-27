@@ -921,6 +921,8 @@ export class ClaudeThreads {
       }
       case "thread/goal/set": {
         const now = Math.floor(Date.now() / 1000);
+        // A goal set a moment ago is known once the catalog has read Claude's record of it.
+        await this.catalog.refresh();
         const current = this.goal(threadId);
         if (params.objective) {
           const session = this.session(threadId);
@@ -931,19 +933,33 @@ export class ClaudeThreads {
           // Like stock, the goal's turn starts after the answer: Desktop shows the goal message itself on the answer.
           setImmediate(() => {
             this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal });
-            session.command(`/goal ${params.objective}`)
+            session.goal(params.objective, current?.status === "active")
               .catch((error: unknown) => this.logger.warn("claude.goal.start-failed", { threadId, error: String(error) }));
           });
           return { goal };
         }
-        if (params.status && params.status !== "active" && current?.status === "active") await this.session(threadId).command("/goal clear");
-        return { goal: current ? { ...current, status: params.status ?? current.status, updatedAt: now } : null };
+        // Claude's `/goal` has no pause (Desktop also pauses a goal before stopping its turn): the goal stays active.
+        if (params.status && params.status !== "active") {
+          void this.newestTurns(threadId, 1).then(({ turns }) => this.gateway.emit(threadId, "error", {
+            threadId, turnId: turns.at(-1)?.id, willRetry: false,
+            error: { message: "Pausing goals isn't supported for Claude models: the goal stays active.", codexErrorInfo: null, additionalDetails: null },
+          }));
+        }
+        return { goal: current };
       }
       case "thread/goal/clear": {
+        await this.catalog.refresh();
         const goal = this.goal(threadId);
-        if (goal?.status === "active") await this.session(threadId).command("/goal clear");
-        this.gateway.emit(threadId, "thread/goal/cleared", { threadId });
-        return { cleared: goal !== null };
+        if (!goal) return { cleared: false };
+        setImmediate(() => {
+          this.gateway.emit(threadId, "thread/goal/cleared", { threadId });
+          // Claude drops a met goal itself.
+          if (goal.status === "active") {
+            this.session(threadId).goal("clear", true)
+              .catch((error: unknown) => this.logger.warn("claude.goal.clear-failed", { threadId, error: String(error) }));
+          }
+        });
+        return { cleared: true };
       }
       case "thread/queue/list": return { data: this.sessions.get(threadId)?.queued ?? [], nextCursor: null };
       case "thread/queue/add": {

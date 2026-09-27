@@ -422,11 +422,31 @@ export class ClaudeSession {
 
   /** Model-visible context without a model reply (provider switch summary, injected items). */
   public inject(text: string): Promise<void> {
+    return this.quietly(`${INJECTED_PREFIX}\n${text}`, { shouldQuery: false, origin: undefined } as unknown as Partial<SDKUserMessage>);
+  }
+
+  /**
+   * Claude's `/goal` (its only goal API). Claude pursues a goal in one turn until it is met and runs a command sent
+   * meanwhile only after that: with a goal active, a running turn stops first. Clearing is no turn: Codex clients show
+   * goals themselves.
+   */
+  public async goal(args: string, active: boolean): Promise<void> {
+    if (active && this.turn) {
+      const done = this.turnDone(this.turn.id);
+      await this.interrupt();
+      await done;
+    }
+    if (args === "clear") await this.quietly("/goal clear");
+    else await this.command(`/goal ${args}`);
+  }
+
+  /** A message that opens no turn; resolves once Claude has taken it. */
+  private quietly(content: string, extra?: Partial<SDKUserMessage>): Promise<void> {
     const uuid = randomUUID();
     this.ensureQuery();
     return new Promise((resolve, reject) => {
       this.injections.set(uuid, { resolve, reject });
-      this.inbox!.push(userMessage(`${INJECTED_PREFIX}\n${text}`, uuid, { shouldQuery: false, origin: undefined } as unknown as Partial<SDKUserMessage>));
+      this.inbox!.push(userMessage(content, uuid, extra));
     });
   }
 
@@ -633,6 +653,8 @@ export class ClaudeSession {
       this.host.subagentMessage(this, m);
       return;
     }
+    // Claude's own word on `/goal` ("Goal set: …"), streamed as a reply: Codex clients show goals themselves.
+    if (m.local_command_run?.command === "goal") return;
     if (this.afterResult && (m.type === "stream_event" || m.type === "assistant")) this.continued();
     switch (m.type) {
       case "stream_event": return this.onStream(m.event);
