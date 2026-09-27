@@ -181,6 +181,8 @@ export function startTool(
     return { state, item: commandItem(state, native.command, native.actions, cwd) };
   }
   if (fileTools.has(name)) return { state, item: { type: "fileChange", id: state.itemId, changes: [], status: "inProgress" } };
+  // The plan Claude proposes to leave plan mode with: stock's proposed plan.
+  if (name === "ExitPlanMode") return { state, item: { type: "plan", id: state.itemId, text: text(input.plan) } };
   const mcp = mcpName(name);
   if (mcp || block.type === "mcp_tool_use") {
     return { state, item: {

@@ -251,6 +251,23 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     yield base(sessionId, { type: "user", message: { role: "user", content } });
     reply = `you picked ${answer}`;
   }
+  const proposed = /^propose a plan: (.+)$/u.exec(text);
+  if (proposed) {
+    // Like the CLI: leaving plan mode asks for permission; allowed, the chat goes back to the mode it had before.
+    const toolUseId = `toolu_${randomUUID().slice(0, 8)}`;
+    const input = { plan: proposed[1]!, planFilePath: "/home/fake/.claude/plans/plan.md" };
+    const tool = { type: "assistant", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: toolUseId, name: "ExitPlanMode", input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } } };
+    transcript.write({ ...tool, apiBlockIndex: 0 });
+    yield base(sessionId, tool);
+    const decision = await options.canUseTool("ExitPlanMode", input, { toolUseID: toolUseId, signal: new AbortController().signal, suggestions: [] });
+    const allowed = decision.behavior === "allow";
+    if (allowed) options.permissionMode = "default";
+    const output = allowed ? "User has approved your plan. You can now start coding." : decision.message;
+    const content = [{ type: "tool_result", tool_use_id: toolUseId, content: output, ...(allowed ? {} : { is_error: true }) }];
+    transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: allowed ? { plan: input.plan, isAgent: false } : `Error: ${output}` });
+    yield base(sessionId, { type: "user", message: { role: "user", content } });
+    reply = "Plan is ready for your review.";
+  }
   const tracked = /^track tasks: (.+)$/u.exec(text);
   if (tracked) {
     const call = async function* (name: string, input: Message, result: Message, output: string): AsyncGenerator<Message> {

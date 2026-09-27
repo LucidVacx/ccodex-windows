@@ -751,6 +751,30 @@ const scenarios = {
     return { question: asked[0].params.questions[0], answers: done.answers };
   },
 
+  /** Stock plan mode: the plan turn ends with a plan item (leaving plan mode asks nothing); Desktop's "Yes, implement
+   *  this plan" (collaboration mode back to default, then the plan) runs it with the full access the chat had. */
+  async planMode() {
+    const dir = join(WORK, "plan");
+    const greet = join(dir, "greet.py");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(greet, "print(\"Hello\")\n");
+    const mode = (name) => ({ mode: name, settings: { model: state.haiku, reasoning_effort: null, developer_instructions: null } });
+    const { thread } = await client.request("thread/start", { model: state.haiku, cwd: dir, approvalPolicy: "never", sandbox: "danger-full-access" });
+    client.asked.length = 0;
+    const since = client.messages.length;
+    const planned = await client.turn(thread.id, "Plan how to add a --verbose flag to greet.py (when set, print verbose on to stderr). Keep the plan to 3 short steps.", { collaborationMode: mode("plan") });
+    const plan = client.messages.slice(since).find((m) => m.method === "item/completed" && m.params.threadId === thread.id && m.params.item.type === "plan")?.params.item;
+    check(planned.turn.status === "completed" && plan?.text, "the plan turn completed with a plan item", itemsOf(liveTurns(thread.id, since)));
+    check(!client.asked.length, "leaving plan mode asks nothing", client.asked.map((m) => `${m.method} ${m.params.command ?? ""}`));
+    check(!readFileSync(greet, "utf8").includes("verbose"), "nothing implemented before the plan is accepted");
+    await client.request("thread/settings/update", { threadId: thread.id, collaborationMode: mode("default") });
+    const done = await client.turn(thread.id, `PLEASE IMPLEMENT THIS PLAN:\n${plan.text}`, { turnTrigger: "plan_implementation", collaborationMode: mode("default") });
+    check(readFileSync(greet, "utf8").includes("verbose"), "the accepted plan was implemented", done.answers);
+    check(!client.asked.length, "implemented with the chat's full access", client.asked.map((m) => `${m.method} ${m.params.command ?? ""}`));
+    check((await items(thread.id)).some((item) => item.type === "plan" && item.id === plan.id), "history shows the plan");
+    return { plan: plan.text.slice(0, 300), planAnswers: planned.answers, answers: done.answers, greet: readFileSync(greet, "utf8") };
+  },
+
   /** A session started with the claude CLI shows up by itself (the image has no ~/.claude/projects yet), continues
    *  through CCodex, and the CLI sees what was said there. */
   async cliSession() {

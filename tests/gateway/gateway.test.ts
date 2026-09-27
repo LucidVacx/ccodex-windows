@@ -294,6 +294,29 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(client.notifications("serverRequest/resolved", threadId)).toHaveLength(1);
   });
 
+  it("ends a Claude plan-mode turn with the proposed plan, and accepting it leaves plan mode for the mode before (stock plan mode)", async () => {
+    const threadId = await claudeThread();
+    const asked: any[] = [];
+    client.onRequest = (message) => { asked.push(message); return { decision: "accept" }; };
+    const full = { approvalPolicy: "never", permissions: ":danger-full-access" };
+    const planned = await client.turn(threadId, "propose a plan: 1. add the flag", { ...full, collaborationMode: { mode: "plan", settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } } });
+    expect(fakeClaude.options.at(-1)!.permissionMode).toBe("plan");
+    // No approval of ExitPlanMode: the plan item is what Desktop asks "Implement this plan?" about once the turn completes.
+    expect(asked).toEqual([]);
+    expect(planned.turn.status).toBe("completed");
+    const plan = client.notifications("item/completed", threadId).map((message) => message.params.item).find((item) => item.type === "plan");
+    expect(plan).toMatchObject({ type: "plan", text: "1. add the flag" });
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(thread.turns.at(-1).items.find((item: any) => item.type === "plan")).toEqual(plan);
+    expect(fakeClaude.options.at(-1)!.permissionMode).toBe("plan");
+    // Desktop's "Yes, implement this plan": the collaboration mode goes back to default, then the plan is sent.
+    await client.request("thread/settings/update", { threadId, collaborationMode: { mode: "default", settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } } });
+    expect(fakeClaude.calls.filter((call) => call.method === "setPermissionMode").at(-1)!.args).toEqual(["bypassPermissions"]);
+    expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings.collaborationMode.mode).toBe("default");
+    await client.turn(threadId, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag; this needs approval", { turnTrigger: "plan_implementation", collaborationMode: { mode: "default", settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } } });
+    expect(asked).toEqual([]);
+  });
+
   it("puts Claude's question to the user in the client's own question UI, even with full access", async () => {
     const threadId = await claudeThread();
     const asked: any[] = [];

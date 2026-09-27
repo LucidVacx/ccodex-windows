@@ -154,6 +154,7 @@ function addUsage(left: TokenUsageBreakdown, right: TokenUsageBreakdown): TokenU
 }
 
 const FILE_TOOLS = new Set(["Edit", "Write", "NotebookEdit", "MultiEdit"]);
+const PLAN_PROPOSED = "The plan is shown to the user, who answers in their next message (approving it ends plan mode). End your turn now, with no further text.";
 
 /**
  * One live Claude session: a single streaming `query()` and one sequential loop that turns SDK messages
@@ -1076,6 +1077,9 @@ export class ClaudeSession {
   // ---- approvals and questions ----
 
   private readonly canUseTool: CanUseTool = async (toolName, input, options) => {
+    // Stock plan mode: the turn ends with the proposed plan (its item) and Desktop asks to implement it; accepting
+    // switches the collaboration mode back, which gives the chat the mode it had before plan mode.
+    if (toolName === "ExitPlanMode" && this.settings.permissionMode === "plan") return { behavior: "deny", message: PLAN_PROPOSED };
     const turnId = this.turn?.id ?? "";
     const itemId = options.toolUseID ?? randomUUID();
     const base = { threadId: this.threadId, turnId, itemId, startedAtMs: Date.now() };
