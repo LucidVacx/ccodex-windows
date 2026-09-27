@@ -47,6 +47,7 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
     this.modelsHold = null;
     this.usageDown = false;
     this.fastOff = false;
+    stopEarly = false;
   },
 };
 
@@ -93,6 +94,8 @@ class Transcript {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Ends the goal Claude is pursuing (an interrupt does). */
 let stopGoal: (() => void) | undefined;
+/** An interrupt that came before the goal it stops started (Claude drops the command it had yet to run). */
+let stopEarly = false;
 
 /** Codex answering an MCP call: it journals the turn under $CODEX_HOME/sessions like `codex mcp-server`. */
 function codexJournal(prompt: string): string {
@@ -176,10 +179,21 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     return;
   }
   if (command?.[1] === "goal") {
+    // Like Claude: it pursues a goal in the same turn until it is met (these: until interrupted, from the start on; the
+    // second is met just as the stop comes).
+    const objective = command[2]!.trim();
+    const pursued = objective === "keep going" || objective === "met when stopped";
+    const stopped = new Promise<void>((resolve) => { stopGoal = resolve; });
+    if (stopEarly) stopGoal!();
+    stopEarly = false;
     await fakeClaude.goalHold;
-    // Like Claude, it records the command a moment after it started running it.
-    await new Promise((resolve) => setTimeout(resolve, 100));
     transcript.write({ type: "user", uuid, message: { role: "user", content: `<command-name>/goal</command-name>\n<command-message>goal</command-message>\n<command-args>${command[2]}</command-args>` } });
+    // Like Claude, a goal set is recorded a moment after the command (clearing is at once); stopped before, it is not set.
+    if (objective !== "clear" && await Promise.race([sleep(100).then(() => false), stopped.then(() => true)])) {
+      transcript.write({ type: "user", message: { role: "user", content: "[Request interrupted by user]" } });
+      yield* finish("", "error_during_execution");
+      return;
+    }
     const output = command[2] === "clear" ? "Goal cleared" : `Goal set: ${command[2]}`;
     transcript.write({ type: "system", subtype: "local_command", content: `<local-command-stdout>${output}</local-command-stdout>`, commandRun: { command: "goal", args: command[2] } });
     // Like Claude, its word on the command comes as a reply of its own.
@@ -187,11 +201,9 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
       type: "assistant", message: { id: randomUUID(), role: "assistant", model: "<synthetic>", content: [{ type: "text", text: output }] },
       parent_tool_use_id: null, local_command_run: { command: "goal", args: command[2] },
     });
-    // Like Claude: it pursues a goal in the same turn until it is met (these: until interrupted; the second is met just
-    // as the stop comes).
-    const objective = command[2]!.trim();
-    if (objective === "keep going" || objective === "met when stopped") {
-      await new Promise<void>((resolve) => { stopGoal = resolve; });
+    if (!pursued) stopGoal = undefined;
+    if (pursued) {
+      await stopped;
       transcript.write(objective === "keep going" ? { type: "user", message: { role: "user", content: "[Request interrupted by user]" } }
         : { type: "attachment", attachment: { type: "goal_status", met: true, condition: objective } });
       yield* finish("", "error_during_execution");
@@ -461,7 +473,8 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
     askSideQuestion: (question: string) => Promise.resolve({ response: question.includes("JSON Schema")
       ? `Here it is:\n\`\`\`json\n${JSON.stringify({ description: `side: ${question.split("\n")[0]}` })}\n\`\`\`` : `side: ${question}` }),
     interrupt: (...args: unknown[]) => {
-      stopGoal?.();
+      if (stopGoal) stopGoal();
+      else stopEarly = true;
       stopGoal = undefined;
       return record("interrupt")(...args);
     },

@@ -82,8 +82,6 @@ export class ClaudeThreads {
   private models_?: Promise<JsonObject[]>;
   private defaultModel: string | null = null;
   private readonly rateLimitWindows = new Map<string, RateLimitWindow & { status: string }>();
-  /** Each chat's last goal change sent to Claude (resolved once Claude took it). */
-  private readonly goalChanges = new Map<string, Promise<void>>();
   private usage?: { at: number; done: Promise<void> };
   /** Why Claude's plan limits could not be read, when they could not. */
   public usageError?: string;
@@ -648,28 +646,17 @@ export class ClaudeThreads {
   }
 
   /**
-   * A goal change reaches Claude after the answer and after the chat's earlier change, which Claude has recorded by
-   * then (it records `/goal` a moment after taking it): a pause right after a set finds the goal and stops its turn.
-   * No `args`: nothing to tell Claude.
+   * Claude's native `/goal` as a Codex ThreadGoal (Claude tracks no budget or time); a paused one is kept in meta.json.
+   * The goal last sent to Claude is the chat's: Claude records a `/goal` a moment after taking it.
    */
-  private changeGoal(threadId: string, notify: () => void, args?: string, active = false): void {
-    const previous = this.goalChanges.get(threadId) ?? Promise.resolve();
-    this.goalChanges.set(threadId, previous.then(() => new Promise<void>((resolve) => setImmediate(resolve))).then(async () => {
-      notify();
-      if (args === undefined) return;
-      await this.session(threadId).goal(args, active);
-      const recorded = args === "clear" ? undefined : args;
-      for (let tries = 0; tries < 100 && this.catalog.get(threadId)?.goal?.objective !== recorded; tries += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        await this.catalog.refresh();
-      }
-    }).catch((error: unknown) => this.logger.warn("claude.goal.change-failed", { threadId, error: String(error) })));
-  }
-
-  /** Claude's native `/goal` as a Codex ThreadGoal (Claude tracks no budget or time); a paused one is kept in meta.json. */
   public goal(threadId: string): JsonObject | null {
     const paused = this.gateway.meta.pausedGoal(threadId);
-    const goal = paused ? { ...paused, met: false } : this.catalog.get(threadId)?.goal;
+    const recorded = this.catalog.get(threadId)?.goal;
+    const sent = this.sessions.get(threadId)?.goalObjective;
+    const now = Math.floor(Date.now() / 1000);
+    const goal = paused ? { ...paused, met: false }
+      : sent === undefined || sent === recorded?.objective ? recorded
+        : sent && { objective: sent, createdAt: now, updatedAt: now, met: false };
     if (!goal) return null;
     return {
       threadId, objective: goal.objective, status: paused ? "paused" : goal.met ? "complete" : "active", tokenBudget: null, tokensUsed: 0,
@@ -976,21 +963,22 @@ export class ClaudeThreads {
         return { goal: goal?.status === "complete" ? null : goal };
       }
       case "thread/goal/set": {
-        // A goal set a moment ago is known once Claude took it and the catalog has read Claude's record of it.
-        await this.goalChanges.get(threadId);
         await this.catalog.refresh();
         const now = Math.floor(Date.now() / 1000);
         const current = this.goal(threadId);
         if (params.objective) {
           this.gateway.meta.setPausedGoal(threadId, null);
-          this.session(threadId);
+          const session = this.session(threadId);
           const goal = {
             threadId, objective: params.objective, status: "active", tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0,
             createdAt: now, updatedAt: now,
           };
           // Like stock, the goal's turn starts after the answer: Desktop shows the goal message itself on the answer.
-          this.changeGoal(threadId, () => this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal }),
-            params.objective, current?.status === "active");
+          setImmediate(() => {
+            this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal });
+            session.goal(params.objective, current?.status === "active")
+              .catch((error: unknown) => this.logger.warn("claude.goal.start-failed", { threadId, error: String(error) }));
+          });
           return { goal };
         }
         // Claude's `/goal` has no pause: pausing clears it there (stopping its turn) and keeps it in meta.json; resuming
@@ -1000,18 +988,26 @@ export class ClaudeThreads {
         if (!pausing && !resuming) return { goal: current };
         const goal: JsonObject = { ...current!, status: params.status, updatedAt: now, timeUsedSeconds: Math.max(0, now - current!.createdAt) };
         this.gateway.meta.setPausedGoal(threadId, pausing ? { objective: goal.objective, createdAt: goal.createdAt, updatedAt: now } : null);
-        this.changeGoal(threadId, () => this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal }),
-          pausing ? "clear" : goal.objective, pausing);
+        setImmediate(() => {
+          this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal });
+          this.session(threadId).goal(pausing ? "clear" : goal.objective, pausing)
+            .catch((error: unknown) => this.logger.warn("claude.goal.update-failed", { threadId, error: String(error) }));
+        });
         return { goal };
       }
       case "thread/goal/clear": {
-        await this.goalChanges.get(threadId);
         await this.catalog.refresh();
         const goal = this.goal(threadId);
         if (!goal) return { cleared: false };
         this.gateway.meta.setPausedGoal(threadId, null);
-        // Claude drops a met goal itself.
-        this.changeGoal(threadId, () => this.gateway.emit(threadId, "thread/goal/cleared", { threadId }), goal.status === "active" ? "clear" : undefined, true);
+        setImmediate(() => {
+          this.gateway.emit(threadId, "thread/goal/cleared", { threadId });
+          // Claude drops a met goal itself.
+          if (goal.status === "active") {
+            this.session(threadId).goal("clear", true)
+              .catch((error: unknown) => this.logger.warn("claude.goal.clear-failed", { threadId, error: String(error) }));
+          }
+        });
         return { cleared: true };
       }
       case "thread/queue/list": return { data: this.sessions.get(threadId)?.queued ?? [], nextCursor: null };
@@ -1168,7 +1164,6 @@ export class ClaudeThreads {
 
   /** The goal of a Claude backend the chat switches away from, out of Claude (a running goal turn stops). */
   public async takeGoal(threadId: string): Promise<JsonObject | null> {
-    await this.goalChanges.get(threadId);
     await this.catalog.refresh();
     const goal = this.goal(threadId);
     if (goal?.status === "active") await this.session(threadId).goal("clear", true);

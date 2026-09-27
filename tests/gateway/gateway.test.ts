@@ -677,9 +677,11 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.request("thread/goal/set", { threadId, objective: "keep going" });
     await client.waitFor("turn/started", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal keep going");
     const edited = client.notifications("turn/completed", threadId).length;
+    const interrupts = () => fakeClaude.calls.filter((call) => call.method === "interrupt").length;
+    const interrupted = interrupts();
     await client.request("thread/goal/set", { threadId, objective: "again" });
     await vi.waitFor(() => expect(client.notifications("turn/completed", threadId).slice(edited).map((message) => message.params.turn.status)).toEqual(["interrupted", "completed"]));
-    expect(fakeClaude.calls.filter((call) => call.method === "interrupt")).toHaveLength(1);
+    expect(interrupts()).toBe(interrupted + 1);
 
     // Clearing is no turn.
     const turns = client.notifications("turn/started", threadId).length;
