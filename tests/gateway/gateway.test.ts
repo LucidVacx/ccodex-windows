@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -200,6 +201,23 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       } while (cursor);
       expect(paged).toEqual(all);
     }
+  });
+
+  it("pages the same list for concurrent requests (Desktop sends three at once when it starts)", async () => {
+    for (const prompt of ["one", "two", "three"]) await client.turn(await stockThread(), prompt);
+    await client.turn(await claudeThread(), "claude");
+    const all = (await client.request("thread/list", { limit: 200 })).data.map((row: any) => row.id);
+    const walk = async () => {
+      const paged: string[] = [];
+      let cursor = null;
+      do {
+        const page: any = await client.request("thread/list", { limit: 1, cursor });
+        paged.push(...page.data.map((row: any) => row.id));
+        cursor = page.nextCursor;
+      } while (cursor);
+      return paged;
+    };
+    expect(await Promise.all([walk(), walk(), walk()])).toEqual([all, all, all]);
   });
 
   it("keeps Claude threads in stock's sections", async () => {
@@ -672,6 +690,19 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(new Set((await listed()).filter((id) => !before.has(id)))).toEqual(new Set(publicIds));
   });
 
+  it("previews a Claude thread by the start of its first prompt and finds it by its title only", async () => {
+    const threadId = await claudeThread();
+    const prompt = `needle ${"x".repeat(200)}`;
+    await client.turn(threadId, prompt);
+    await client.request("thread/name/set", { threadId, name: "Haystack title" });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const row = (await client.request("thread/list", { limit: 200 })).data.find((thread: any) => thread.id === threadId);
+    expect(row.preview).toBe(prompt.slice(0, 100));
+    const found = async (searchTerm: string) => (await client.request("thread/list", { limit: 200, searchTerm })).data.map((thread: any) => thread.id);
+    expect(await found("haystack")).toContain(threadId);
+    expect(await found("needle")).not.toContain(threadId);
+  });
+
   it("keeps a Claude thread's name through an edit of its only message", async () => {
     const threadId = await claudeThread();
     const { turn } = await client.turn(threadId, "one");
@@ -728,6 +759,15 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     client = await gateway.connect();
     const models = await client.request("model/list", {});
     expect(models.data.map((model: any) => model.id)).toContain(CLAUDE);
+  });
+
+  it("clears the run directories of gateways killed without stopping", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ccodex-state-"));
+    const dead = join(dataDir, "run", String(spawnSync("true").pid));
+    mkdirSync(dead, { recursive: true });
+    await gateway.stop();
+    gateway = await startTestGateway({ dataDir });
+    expect(readdirSync(join(dataDir, "run"))).toEqual([String(process.pid)]);
   });
 
   it("pages a switched thread's oldest turn items by its id alone (Desktop after a daemon restart, turns cached)", async () => {

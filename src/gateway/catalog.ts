@@ -10,6 +10,8 @@ interface StockCache {
   readonly threads: Thread[];
   next: string | null;
   done: boolean;
+  /** Concurrent lists share the cache: pages are read one at a time. */
+  loading: Promise<void>;
 }
 
 const CACHE_MS = 10_000;
@@ -71,7 +73,7 @@ export class Catalog {
     if (params.parentThreadId && thread.parentThreadId !== meta.rowId(params.parentThreadId)) return false;
     if (params.searchTerm) {
       const term = String(params.searchTerm).toLowerCase();
-      if (!`${thread.name ?? ""}\n${thread.preview}`.toLowerCase().includes(term)) return false;
+      if (!thread.name?.toLowerCase().includes(term)) return false;
     }
     return true;
   }
@@ -90,20 +92,24 @@ export class Catalog {
    * Stock threads for one filter set, fetched only as far as needed, in pages of the client's size: stock's
    * paging depends on the page size, so this walks exactly the pages the client would get from stock itself.
    */
-  private async stockThreads(connection: Connection, params: JsonObject, needed: number, fresh: boolean): Promise<Thread[]> {
+  private async stockThreads(connection: Connection, params: JsonObject, needed: number, fresh: boolean): Promise<{ threads: Thread[]; done: boolean }> {
     const { cursor: _cursor, ...filters } = params;
     const key = JSON.stringify(filters);
     if (fresh || !this.stockCache || this.stockCache.key !== key || Date.now() - this.stockCache.at > CACHE_MS) {
-      this.stockCache = { key, at: Date.now(), threads: [], next: null, done: false };
+      this.stockCache = { key, at: Date.now(), threads: [], next: null, done: false, loading: Promise.resolve() };
     }
     const cache = this.stockCache;
-    while (!cache.done && cache.threads.length < needed) {
-      const page = await connection.upstream.request("thread/list", { ...filters, cursor: cache.next });
-      cache.threads.push(...page.data);
-      cache.next = page.nextCursor;
-      cache.done = !page.nextCursor;
-    }
-    return cache.threads;
+    const load = cache.loading.then(async () => {
+      while (!cache.done && cache.threads.length < needed) {
+        const page = await connection.upstream.request("thread/list", { ...filters, cursor: cache.next });
+        cache.threads.push(...page.data);
+        cache.next = page.nextCursor;
+        cache.done = !page.nextCursor;
+      }
+    });
+    cache.loading = load.catch(() => undefined);
+    await load;
+    return { threads: [...cache.threads], done: cache.done };
   }
 
   /** Lineage backends are hidden; a lineage's public row carries its current backend's live state. */
@@ -156,8 +162,7 @@ export class Catalog {
       await Promise.all([this.gateway.claude.catalog.refresh(), this.refreshSections(), this.gateway.claude.models().catch(() => undefined)]);
     }
     const claude = await this.project(await this.claudeThreads(params));
-    const stock = await this.stockThreads(connection, { ...params, limit }, offset + limit, !params.cursor);
-    const complete = this.stockCache!.done;
+    const { threads: stock, done: complete } = await this.stockThreads(connection, { ...params, limit }, offset + limit, !params.cursor);
     const shown = await this.project(stock);
     let merged = this.merge(shown, claude, params);
     // Without all stock rows, only the part of the merge that no unseen stock row can precede is final (the last
@@ -200,7 +205,7 @@ export class Catalog {
       cursor = page.nextCursor;
     } while (cursor && stockResults.length < offset + limit);
     const claude = (await this.project(await this.claudeThreads({ archived: params.archived, sourceKinds: params.sourceKinds, searchTerm })))
-      .map((thread) => ({ thread, snippet: thread.name ?? thread.preview.slice(0, 120) }));
+      .map((thread) => ({ thread, snippet: thread.name }));
     const visible = stockResults.filter((result) => !this.gateway.lineages.isHidden(result.thread.id));
     let all = [...visible, ...claude].sort((left, right) =>
       direction * (Number(left.thread[key] ?? 0) - Number(right.thread[key] ?? 0)));

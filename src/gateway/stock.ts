@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import WebSocket from "ws";
@@ -24,9 +24,23 @@ function processTree(root: number): number[] {
   return tree.reverse();
 }
 
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Spawns the installed `codex app-server` on a private unix socket. Its exit takes the gateway down. */
 export async function startStockProcess(config: Config, args: readonly string[], logger: Logger): Promise<StockProcess> {
-  const runDir = join(config.dataDir, "run", String(process.pid));
+  const runRoot = join(config.dataDir, "run");
+  // A gateway killed without stopping leaves its directory behind.
+  for (const pid of existsSync(runRoot) ? readdirSync(runRoot) : []) {
+    if (!alive(Number(pid))) rmSync(join(runRoot, pid), { recursive: true, force: true });
+  }
+  const runDir = join(runRoot, String(process.pid));
   const socketPath = join(runDir, "stock.sock");
   mkdirSync(runDir, { recursive: true, mode: 0o700 });
   rmSync(socketPath, { force: true });
