@@ -17,6 +17,7 @@ import { completedToolItem } from "./native/projector.js";
 import { ANSWER_CHARS, assistantBlockItemId, continuationTurnId } from "./native/ids.js";
 import { readTranscriptRecords, type UserRecord } from "./native/records.js";
 import { userText } from "./native/summary.js";
+import { claudeEffort, DELEGATION_OFF, DELEGATION_ON, ULTRA } from "./delegation.js";
 import { foreignOwner, peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
 import { baseOptions } from "./sdk.js";
 import { endedBackground, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
@@ -200,6 +201,8 @@ export class ClaudeSession {
   private readonly peerMessages = new Set<string>();
   /** The running turn's result came: Claude answering again means it took another prompt by itself. */
   private afterResult = false;
+  /** Proactive delegation (the `ultra` effort) as last told to Claude. */
+  private delegating = false;
   /** A task's end came with no turn running: the command Claude runs for it goes on after the last answer. */
   private notified = false;
   /** Claude's last block since a turn began (its item id; the text item while it streams text). */
@@ -293,7 +296,7 @@ export class ClaudeSession {
       ...baseOptions(this.host.config),
       cwd: settings.cwd,
       ...(settings.model ? { model: settings.model } : {}),
-      ...(settings.effort ? { effort: settings.effort as never } : {}),
+      ...(settings.effort ? { effort: claudeEffort(settings.effort) as never } : {}),
       ...(settings.fast ? { settings: { fastMode: true } } : {}),
       permissionMode: settings.permissionMode,
       // Claude 5 omits its thinking by default: summarized, it shows as the turn's reasoning summary like stock's.
@@ -380,6 +383,11 @@ export class ClaudeSession {
       this.ensureQuery();
       this.inbox!.push(userMessage(content, uuid));
       return startedTurn(this.liveTurn()!);
+    }
+    // Like stock's multi-agent mode message: in the thread once the mode changes.
+    if ((this.settings.effort === ULTRA) !== this.delegating) {
+      this.delegating = !this.delegating;
+      await this.inject(this.delegating ? DELEGATION_ON : DELEGATION_OFF);
     }
     const turn = this.openTurn(uuid, input, params.clientUserMessageId ?? null, hidden, params.turnId !== undefined);
     this.ensureQuery();
@@ -482,7 +490,7 @@ export class ClaudeSession {
       // The CLI settles the mode per model (no auto mode on Haiku falls back to default): a new model re-applies it.
       if (next.permissionMode !== previous.permissionMode || next.model !== previous.model) await this.sdk.setPermissionMode(next.permissionMode);
       if (next.effort !== previous.effort || next.fast !== previous.fast) {
-        await this.sdk.applyFlagSettings({ effortLevel: next.effort as never, fastMode: next.fast });
+        await this.sdk.applyFlagSettings({ effortLevel: claudeEffort(next.effort) as never, fastMode: next.fast });
       }
     }
     return true;

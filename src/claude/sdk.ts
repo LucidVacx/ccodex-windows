@@ -6,6 +6,7 @@ import type { JsonObject } from "../protocol/codex.js";
 import type { SessionSettings } from "./session.js";
 import { modelCatalogValue, normalizeClaudeModelIdentifier } from "./modelSelection.js";
 import { claudeSkillFile } from "./toolMapper.js";
+import { ULTRA } from "./delegation.js";
 
 export function claudeEnvironment(): Record<string, string | undefined> {
   const env: Record<string, string | undefined> = { ...process.env, CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" };
@@ -80,6 +81,7 @@ const effortDescriptions: Record<string, string> = {
   high: "Deep reasoning for complex work.",
   xhigh: "Extra-high reasoning effort.",
   max: "Maximum available reasoning effort.",
+  ultra: "Maximum reasoning with automatic task delegation",
 };
 
 export function claudeModelDisplayName(model: ModelInfo): string {
@@ -97,7 +99,9 @@ export function claudeModelDisplayName(model: ModelInfo): string {
 }
 
 export function mapClaudeModel(model: ModelInfo, prefix: string): JsonObject {
-  const efforts = model.supportsEffort ? (model.supportedEffortLevels ?? []) : [];
+  const supported: string[] = model.supportsEffort ? (model.supportedEffortLevels ?? []) : [];
+  // Stock's `ultra`: Claude's max with proactive sub-agent delegation.
+  const efforts = supported.includes("max") ? [...supported, ULTRA] : supported;
   // Like stock models: Desktop adds the standard speed itself.
   const serviceTiers = model.supportsFastMode ? [{ id: "fast", name: "Fast", description: "Claude fast mode." }] : [];
   const id = `${prefix}${modelCatalogValue(model)}`;

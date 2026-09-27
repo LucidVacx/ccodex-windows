@@ -123,7 +123,8 @@ CCodex is a thin layer in front of the `codex app-server` you already have insta
   Forks and rollbacks across the switch land in the right segment.
 - Codex approval modes map onto Claude permissions: *Full Access* →
   `bypassPermissions`, *Ask for approval* → `default`, *Approve for me* → `auto`.
-  Claude effort and fast mode map from Codex reasoning / priority settings.
+  Claude effort and fast mode map from Codex reasoning / priority settings; Codex's
+  `ultra` runs Claude at `max` and turns on proactive sub-agent delegation, as stock does.
 - The only state CCodex keeps is a tiny optional `~/.ccodex/state/meta.json`
   (provider-switch lineages, archive flags and sections of Claude threads).
 - Plain `codex …` commands (TUI, `exec`, login) go straight to your installed Codex.
