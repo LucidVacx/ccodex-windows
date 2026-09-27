@@ -1131,21 +1131,24 @@ const scenarios = {
         return !state.matrixSettle.unnamed.length && !statuses.includes("active");
       }, 120_000, "chats settled").catch((error) => { throw Object.assign(error, { detail: state.matrixSettle }); });
 
+      // An effort not chosen shows as the model's default: the same to the user.
+      const defaults = Object.fromEntries((await client.request("model/list", {})).data.map((model) => [model.id, model.defaultReasoningEffort]));
+      const shown = (effort, model) => effort ?? defaults[model] ?? null;
       const capture = async () => {
         const rows = (await client.request("thread/list", { limit: 100 })).data;
         const out = {};
         for (const [name, threadId] of Object.entries(chats)) {
           const failed = (error) => ({ error: error.message });
           const resume = await client.request("thread/resume", { threadId }).then((r) => ({
-            model: r.model, modelProvider: r.modelProvider, effort: r.reasoningEffort, serviceTier: r.serviceTier, approvalPolicy: r.approvalPolicy,
-            approvalsReviewer: r.approvalsReviewer, sandbox: r.sandbox, profile: r.activePermissionProfile, collaborationMode: r.collaborationMode,
-            threadModel: r.thread.model, threadEffort: r.thread.reasoningEffort, cwd: r.cwd,
+            model: r.model, modelProvider: r.modelProvider, effort: shown(r.reasoningEffort, r.model), serviceTier: r.serviceTier, approvalPolicy: r.approvalPolicy,
+            approvalsReviewer: r.approvalsReviewer, sandbox: r.sandbox, profile: r.activePermissionProfile, collaborationMode: r.collaborationMode && { ...r.collaborationMode, settings: { ...r.collaborationMode.settings, reasoning_effort: shown(r.collaborationMode.settings.reasoning_effort, r.model) } },
+            threadModel: r.thread.model, threadEffort: shown(r.thread.reasoningEffort, r.thread.model), cwd: r.cwd,
           }), failed);
           const goalNow = await client.request("thread/goal/get", { threadId }).then((g) => g.goal && { status: g.goal.status, objective: g.goal.objective.slice(0, 50) }, failed);
           const turns = await client.request("thread/read", { threadId, includeTurns: true })
             .then(({ thread }) => thread.turns.map((turn) => `${turn.id} ${turn.status} ${turn.items.map((item) => item.type).join(",")}`), failed);
           const row = rows.find((entry) => entry.id === threadId);
-          out[name] = { resume, goal: goalNow, turns, row: row && { name: row.name, preview: row.preview, model: row.model, modelProvider: row.modelProvider, effort: row.reasoningEffort } };
+          out[name] = { resume, goal: goalNow, turns, row: row && { name: row.name, preview: row.preview, model: row.model, modelProvider: row.modelProvider, effort: shown(row.reasoningEffort, row.model) } };
         }
         // The settings a client sees next: what the gateway tells it after a resume.
         return out;
