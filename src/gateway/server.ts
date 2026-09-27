@@ -13,7 +13,7 @@ import { Connection } from "./connection.js";
 import { Lineages } from "./lineage.js";
 import { RemoteControl } from "./remote.js";
 import { acquireSocketStartupLock, prepareUnixSocket } from "./socket.js";
-import { ccodexCommand, synthesizeTurn } from "./status.js";
+import { isStatusCommand, statusCommand } from "./status.js";
 import { StockClient, openStockSocket, startStockProcess, type StockProcess } from "./stock.js";
 import { Titles } from "./titles.js";
 
@@ -189,9 +189,10 @@ export class Gateway {
         throw new RpcFailure(-32600, `no rollout found for thread id ${threadId}`, undefined, true);
       };
     }
+    if ((method === "turn/start" || method === "turn/steer") && isStatusCommand(params)) {
+      return (conn, p) => statusCommand(this, conn, method, p);
+    }
     if (method === "turn/start") {
-      const command = ccodexCommand(params);
-      if (command) return (conn, p) => synthesizeTurn(this, conn, p, command);
       if (params.turnTrigger === "thread_title" && this.config.renamePrompt) {
         return (conn, p) => this.titles.answerDesktopTitleTurn(conn, p);
       }

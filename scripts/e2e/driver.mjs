@@ -243,9 +243,9 @@ const scenarios = {
 
   async status() {
     const stock = await client.turn(state.stock, "/ccstatus");
-    const claude = await client.turn(state.claude, "/ccstate");
-    check(stock.answers[0]?.includes("CCodex"), "/ccstatus", stock.answers);
-    check(claude.answers[0]?.includes("permissions"), "/ccstate", claude.answers);
+    const claude = await client.turn(state.claude, "cc");
+    check(stock.answers[0]?.includes("◆ CCodex") && stock.answers[0]?.includes("Codex week"), "/ccstatus", stock.answers);
+    check(claude.answers[0]?.includes("❋ Claude"), "cc", claude.answers);
     return { status: stock.answers[0], state: claude.answers[0] };
   },
 
@@ -768,8 +768,8 @@ const scenarios = {
         await sleep(1_000);
       }
       check(claudeRunning(chats[1]) && claudeRunning(chats[2]), "the chats used later keep theirs", chats.map(claudeRunning));
-      const said = await client.turn(chats[0], "/ccstate");
-      check(/at most 2\) and this chat was used longest ago/u.test(said.answers.join(" ")), "/ccstate tells why", said.answers);
+      const said = await client.turn(chats[0], "/cc");
+      check(/at most 2\) and this chat was used longest ago/u.test(said.answers.join(" ")), "/cc tells why", said.answers);
       const again = await client.turn(chats[0], "Which word did I ask you to remember? Reply with it only.");
       check(again.answers.join(" ").includes("ALPHA"), "it answers with its history", again.answers);
       return { closed: chats[0] };

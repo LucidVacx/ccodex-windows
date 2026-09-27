@@ -379,20 +379,42 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(thread.turns[0].completedAt).toBe(before.completedAt);
   });
 
-  it("answers /ccstatus and /ccstate with a synthetic turn", async () => {
+  it("answers /cc and its aliases with a synthetic turn", async () => {
+    const answerOf = (threadId: string) => client.notifications("item/completed", threadId).map((message) => message.params.item)
+      .filter((item) => item.type === "agentMessage").at(-1).text as string;
     const threadId = await stockThread();
     await client.turn(threadId, "/ccstatus");
-    const answer = client.notifications("item/completed", threadId).map((message) => message.params.item).find((item) => item.type === "agentMessage");
-    expect(answer.text).toContain("◆ **CCodex** │ status");
-    expect(answer.text).toContain("֎ **Codex** · ✅ ready");
+    expect(answerOf(threadId)).toMatch(/^### ◆ CCodex `[^`]+`\n\n\*\*֎ /u);
+    expect(answerOf(threadId)).toContain("| **Claude** | limits appear after the first Claude turn |");
     const claude = await claudeThread();
-    await client.turn(claude, "/ccstate");
-    const state = client.notifications("item/completed", claude).map((message) => message.params.item).find((item) => item.type === "agentMessage");
-    expect(state.text).toContain("permissions ▸ default");
+    for (const command of ["/cc", "CC", " ccodex ", "/ccstate", "ccstatus"]) {
+      await client.turn(claude, command);
+      expect(answerOf(claude)).toContain("**❋ Claude Opus 5.5** · Ask · 🟡 Idle");
+    }
+    expect(answerOf(claude)).toContain(`_Thread \`${claude}\``);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.notifications("thread/status/changed", claude).at(-1)!.params.status).toEqual({ type: "idle" });
     const { thread } = await client.request("thread/read", { threadId: claude, includeTurns: true });
     expect(thread.turns).toHaveLength(0);
+    expect(fakeClaude.prompts).toHaveLength(0);
+  });
+
+  it("answers /cc sent while a turn runs inside that turn, never telling the model", async () => {
+    const threadId = await claudeThread();
+    // The turn waits on its tool approval until the test answers it.
+    let approve!: () => void;
+    client.onRequest = () => new Promise((resolve) => { approve = () => resolve({ decision: "accept" }); });
+    const { turn } = await client.request("turn/start", { threadId, input: text("this needs approval") });
+    await vi.waitFor(() => expect(approve).toBeDefined());
+    expect(await client.request("turn/steer", { threadId, input: text("/cc"), expectedTurnId: turn.id, clientUserMessageId: "c1" })).toEqual({ turnId: turn.id });
+    await vi.waitFor(() => expect(client.notifications("item/completed", threadId).map((message) => message.params)
+      .find((params) => params.item.type === "agentMessage" && params.item.text.includes("🟢 Running"))?.turnId).toBe(turn.id));
+    expect(client.notifications("item/completed", threadId).find((message) => message.params.item.clientId === "c1")!.params.turnId).toBe(turn.id);
+    approve();
+    await client.waitFor("turn/completed", (params) => params.turn.id === turn.id);
+    expect(fakeClaude.prompts.map((prompt) => prompt.text)).toEqual(["this needs approval"]);
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(itemsOf(thread.turns).filter((item: string) => item.startsWith("user:"))).toEqual(["user:this needs approval"]);
   });
 
   it("serves /side on a Claude thread through the source session", async () => {

@@ -45,9 +45,9 @@ missing bridge.
   Fork, effort and fast-mode settings all work with Claude models like they were built in.
 - 🧩 **Claude skills in `$` autocomplete** — project and user skills appear beside Codex
   skills and invoke Claude's native slash commands.
-- 📊 **Status commands** — `/ccstatus` shows provider health and quotas for ❋ Claude
-  and ֎ Codex; `/ccstate` shows the current task's model, context, traffic, cost, and
-  session stats.
+- 📊 **Status command** — `/cc` (also `/ccstatus`, `/ccodex`, `/ccstate`, with or without
+  the slash) shows the chat's model, settings, context and session next to ❋ Claude and
+  ֎ Codex quotas. Sent while a turn runs, it answers at once without reaching the model.
 - ✨ **Bonus: better thread titles** — threads in the Codex App get auto-named in a
   fun, readable way with an emoji prefix, so you can tell them apart at a glance.
   Want your own naming style? Drop any custom prompt into `~/.ccodex/config.toml`.
@@ -212,7 +212,7 @@ leaves your disk.
 
 Client quirk worth knowing: the built-in `/status` differs by client (Mobile consumes
 provider-labelled quota events; Desktop may render its own OpenAI-account view).
-`/ccstatus` is the client-independent source of truth.
+`/cc` is the client-independent source of truth.
 
 ## Development
 

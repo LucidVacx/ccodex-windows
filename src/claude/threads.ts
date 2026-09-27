@@ -118,7 +118,7 @@ export class ClaudeThreads {
   private cpuSeen = new Map<number, { cpu: number; at: number }>();
   private sweeper?: NodeJS.Timeout;
 
-  /** What CCodex last did to each chat's process and commands, and why (shown by /ccstate). */
+  /** What CCodex last did to each chat's process and commands, and why (shown by /cc). */
   private readonly actions = new Map<string, { at: number; text: string }[]>();
 
   private act(session: ClaudeSession, event: string, text: string, pids: number[] | undefined): void {
@@ -1145,6 +1145,7 @@ export class ClaudeThreads {
       effort: settings.effort,
       fast: settings.fast,
       permissionMode: settings.permissionMode,
+      cwd: settings.cwd,
       loaded: session !== undefined,
       process: session?.loaded ?? false,
       actions: this.actions.get(threadId) ?? [],

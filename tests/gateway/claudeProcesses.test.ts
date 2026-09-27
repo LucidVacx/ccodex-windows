@@ -97,7 +97,7 @@ describe("Claude processes: started ahead of a prompt, gone when nobody uses the
     expect(closed(thread.id)).toBe(false);
     expect((await client.request("thread/loaded/list", {})).data).toContain(thread.id);
     await client.turn(thread.id, "/ccstate");
-    expect(stateText(thread.id)).toMatch(/no Claude process[\s\S]*closed its Claude process: quiet for/u);
+    expect(stateText(thread.id)).toMatch(/process unloaded, the next message restarts it[\s\S]*Closed its Claude process: quiet for/u);
     await client.turn(thread.id, "again");
     expect(fakeClaude.options.at(-1)).toMatchObject({ resume: thread.id });
     expect(fakeClaude.prompts.at(-1)).toMatchObject({ sessionId: thread.id, text: "again" });
