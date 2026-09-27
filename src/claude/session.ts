@@ -174,7 +174,6 @@ export class ClaudeSession {
   public queued: QueuedSubmissionLike[] = [];
   public totalUsage: TokenUsageBreakdown = EMPTY_USAGE;
   public lastUsage: TokenUsageBreakdown = EMPTY_USAGE;
-  public costUsd = 0;
   public liveModel: string | null = null;
   private sdk?: Query;
   /** Last sign of life: a message from Claude, a prompt, a command. */
@@ -1086,7 +1085,6 @@ export class ClaudeSession {
     // A turn a message from another agent started, unless showPeerMessage read it back already.
     const origin = peerOrigin(m.origin);
     if (origin) this.showPeer(this.turn.id, origin, "");
-    this.costUsd += Number(m.total_cost_usd ?? 0);
     if (m.subtype !== "success" && !this.turn.interrupted) {
       const errors = Array.isArray(m.errors) ? m.errors.join("\n") : "";
       if (m.subtype === "error_during_execution" && !errors) this.turn.interrupted = true;

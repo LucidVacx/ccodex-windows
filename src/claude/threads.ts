@@ -1267,7 +1267,6 @@ export class ClaudeThreads {
       usage: session?.totalUsage,
       contextWindow: this.contextWindow(session?.liveModel ?? settings.model),
       lastUsage: session?.lastUsage,
-      costUsd: session?.costUsd ?? 0,
       backgroundTasks: session?.tasks.size ?? 0,
     };
   }

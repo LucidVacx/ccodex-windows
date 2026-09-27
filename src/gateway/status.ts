@@ -105,7 +105,6 @@ async function statusText(gateway: Gateway, connection: Connection, threadId: st
     session.push(state.running ? "working on a turn" : state.process ? "Claude process running" : state.loaded
       ? "process unloaded, the next message restarts it" : "not opened since the gateway started");
     if (state.backgroundTasks) session.push(`${state.backgroundTasks} background task${state.backgroundTasks === 1 ? "" : "s"}`);
-    if (state.costUsd) session.push(`$${Number(state.costUsd).toFixed(2)} spent`);
     cwd = state.cwd;
     actions = state.actions;
   } else {
