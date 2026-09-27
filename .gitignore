@@ -30,3 +30,4 @@ lab/apple-container/.build/
 !legal/THIRD_PARTY_NOTICES.md
 !skills/**/*.md
 !agents/*.md
+!claude/chat-formatting.md

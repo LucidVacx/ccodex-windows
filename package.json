@@ -33,6 +33,7 @@
     "scripts/install-claude-stack.sh",
     "agents/*.md",
     "skills/**/*.md",
+    "claude/chat-formatting.md",
     "examples/config.toml",
     "legal/LICENSES.md",
     "legal/THIRD_PARTY_NOTICES.md",

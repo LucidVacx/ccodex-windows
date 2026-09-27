@@ -84,6 +84,11 @@ npm install -g @gkorepanov/ccodex
 ccodex setup
 ```
 
+In a terminal, setup offers to append two sections to your global `~/.claude/CLAUDE.md`
+(Formulas, Plots): the App renders LaTeX only as `\(...\)` / `\[...\]` and shows plots
+inline only as `![name](/abs/path.png)`; without them Claude's formulas and plots look
+subpar there. They live in [`claude/chat-formatting.md`](claude/chat-formatting.md).
+
 Provider login is optional at install time — add or repair it whenever:
 
 ```sh
