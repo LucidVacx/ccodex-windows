@@ -13,7 +13,7 @@ export interface FakeClaudeLog {
   readonly calls: Array<{ method: string; args: unknown[] }>;
 }
 
-export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null } = {
+export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) => string; spawnError: string | null; compactError: string | null; hold: Promise<void> | null; backgroundMs: number; modelsHold: Promise<void> | null; usageDown: boolean } = {
   prompts: [],
   options: [],
   calls: [],
@@ -28,6 +28,8 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
   backgroundMs: 500,
   /** Set: the models probe answers only once it settles. */
   modelsHold: null,
+  /** Set: claude.ai's usage endpoint fails, Claude's `/usage` data has no windows. */
+  usageDown: false,
   reset() {
     this.prompts.length = 0;
     this.options.length = 0;
@@ -38,6 +40,7 @@ export const fakeClaude: FakeClaudeLog & { reset(): void; reply: (text: string) 
     this.hold = null;
     this.backgroundMs = 500;
     this.modelsHold = null;
+    this.usageDown = false;
   },
 };
 
@@ -127,6 +130,9 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
   yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "running" });
   yield base(sessionId, { type: "command_lifecycle", state: "started", command_uuid: uuid });
   const finish = function* (result: string): Generator<Message> {
+    // Like the CLI's after each API answer: no `utilization`, the plan windows in `unifiedWindows`.
+    yield base(sessionId, { type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790539800, rateLimitType: "five_hour", isUsingOverage: false,
+      unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1790539800 }, seven_day: { utilization: 0.06, resetsAt: 1791082800 } } } });
     yield base(sessionId, { type: "result", subtype: "success", is_error: false, result, total_cost_usd: 0.01, user_message_uuids: [uuid], modelUsage: { "claude-opus-5-5": { contextWindow: 200_000 } } });
     yield base(sessionId, { type: "command_lifecycle", state: "completed", command_uuid: uuid });
     yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "idle" });
@@ -401,7 +407,7 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
     supportedCommands: () => Promise.resolve([{ name: "review-pr", description: "Review a PR", argumentHint: "<n>" }]),
     usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: () => Promise.resolve({
       rate_limits_available: true,
-      rate_limits: { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 3, resets_at: null }, seven_day_opus: null, model_scoped: [{ display_name: "Fable", utilization: 40, resets_at: null }] },
+      rate_limits: fakeClaude.usageDown ? null : { five_hour: { utilization: 5, resets_at: null }, seven_day: { utilization: 3, resets_at: null }, seven_day_opus: null, model_scoped: [{ display_name: "Fable", utilization: 40, resets_at: null }] },
     }),
     askSideQuestion: (question: string) => Promise.resolve({ response: `side: ${question}` }),
     interrupt: record("interrupt"),

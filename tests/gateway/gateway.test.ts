@@ -438,6 +438,21 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(fakeClaude.prompts).toHaveLength(0);
   });
 
+  it("/cc: Claude's 5h and weekly windows come from its turns' rate limit events when its /usage data does not", async () => {
+    const answerOf = (threadId: string) => client.notifications("item/completed", threadId).map((message) => message.params.item)
+      .filter((item) => item.type === "agentMessage").at(-1).text as string;
+    fakeClaude.usageDown = true;
+    const threadId = await claudeThread();
+    await client.turn(threadId, "/cc");
+    expect(answerOf(threadId)).toContain("| **Claude** | 🔴 limits unavailable: claude.ai's usage endpoint did not answer |");
+    await client.turn(threadId, "one");
+    const limits = (await client.request("account/rateLimits/read", {})).rateLimits;
+    expect([limits.primary, limits.secondary]).toEqual([
+      { usedPercent: 10, windowDurationMins: 300, resetsAt: 1790539800 }, { usedPercent: 6, windowDurationMins: 10_080, resetsAt: 1791082800 }]);
+    await client.turn(threadId, "/cc");
+    expect(answerOf(threadId)).toMatch(/\| \*\*Claude 5h\*\* \| `█+░+` 10% · resets [^|]+ \|\n\| \*\*Claude week\*\* \| `█+░+` 6% · resets [^|]+ \|\n\| \*\*Codex/u);
+  });
+
   it("answers /cc sent while a turn runs inside that turn, never telling the model", async () => {
     const threadId = await claudeThread();
     // The turn waits on its tool approval until the test answers it.

@@ -636,15 +636,23 @@ export class ClaudeThreads {
   }
 
   public onRateLimit(info: JsonObject | undefined): void {
-    if (!info?.rateLimitType) return;
-    // A turn's event often carries no utilization: the last known one stays.
-    const known = this.rateLimitWindows.get(info.rateLimitType)?.usedPercent ?? 0;
-    this.rateLimitWindows.set(info.rateLimitType, {
-      status: info.status,
-      usedPercent: typeof info.utilization === "number" ? Math.round(info.utilization * 100) : info.status === "rejected" ? 100 : known,
-      windowDurationMins: WINDOW_MINUTES[info.rateLimitType] ?? null,
-      resetsAt: typeof info.resetsAt === "number" ? info.resetsAt : null,
-    });
+    if (!info) return;
+    // A turn's event carries every plan window Claude knows in `unifiedWindows` (utilization as a fraction); `status`,
+    // and `utilization` if any, are about the window `rateLimitType` names. A window without one keeps the last known.
+    const windows: Record<string, JsonObject> = { ...info.unifiedWindows };
+    if (info.rateLimitType) windows[info.rateLimitType] = { resetsAt: info.resetsAt, utilization: info.utilization, ...windows[info.rateLimitType] };
+    for (const [type, window] of Object.entries(windows)) {
+      const status = type === info.rateLimitType ? info.status : "allowed";
+      const usedPercent = typeof window.utilization === "number" ? Math.round(window.utilization * 100)
+        : status === "rejected" ? 100 : this.rateLimitWindows.get(type)?.usedPercent;
+      if (usedPercent === undefined) continue;
+      this.rateLimitWindows.set(type, {
+        status,
+        usedPercent,
+        windowDurationMins: WINDOW_MINUTES[type] ?? null,
+        resetsAt: typeof window.resetsAt === "number" ? window.resetsAt : null,
+      });
+    }
     const snapshot = this.rateLimitSnapshot();
     for (const connection of this.gateway.connections) {
       if (connection.provider === "claude") connection.notify("account/rateLimits/updated", { rateLimits: snapshot });
@@ -678,8 +686,11 @@ export class ClaudeThreads {
   private async readUsage(): Promise<void> {
     try {
       const usage = await withProbeQuery(this.config, undefined, (probe) => probe.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }));
+      // No windows at all: claude.ai's usage endpoint failed (e.g. rate-limited) and Claude had nothing recent cached.
+      if (usage.rate_limits_available && !usage.rate_limits) throw new Error("claude.ai's usage endpoint did not answer");
       this.usageError = usage.rate_limits_available ? undefined : "no plan limits for this login (API key or cloud provider)";
-      this.modelLimits = (usage.rate_limits?.model_scoped ?? []).filter((row) => typeof row.utilization === "number").map((row) => ({
+      // Absent when Claude answers from its cached data: the last known stay.
+      if (usage.rate_limits?.model_scoped) this.modelLimits = usage.rate_limits.model_scoped.filter((row) => typeof row.utilization === "number").map((row) => ({
         name: row.display_name,
         window: { usedPercent: Math.round(row.utilization!), windowDurationMins: 10_080, resetsAt: row.resets_at ? Math.floor(Date.parse(row.resets_at) / 1000) : null },
       }));
