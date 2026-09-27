@@ -173,7 +173,7 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     yield* finish("");
     return;
   }
-  transcript.write({ type: "user", uuid, origin: { kind: "human" }, promptId: randomUUID(), message: { role: "user", content: prompt.message.content } });
+  transcript.write({ type: "user", uuid, origin: { kind: "human" }, promptId: randomUUID(), permissionMode: options.permissionMode, message: { role: "user", content: prompt.message.content } });
   let reply = fakeClaude.reply(text);
   const tool = (messageId: string, index: number, name: string, input: Message): Message => ({ type: "assistant", message: { id: messageId, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: `toolu_${randomUUID().slice(0, 8)}`, name, input }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } }, apiBlockIndex: index });
   const toolResult = function* (call: Message, output: string, result: Message = { stdout: output, stderr: "" }): Generator<Message> {

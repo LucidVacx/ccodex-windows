@@ -301,6 +301,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const full = { approvalPolicy: "never", permissions: ":danger-full-access" };
     const planned = await client.turn(threadId, "propose a plan: 1. add the flag", { ...full, collaborationMode: { mode: "plan", settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } } });
     expect(fakeClaude.options.at(-1)!.permissionMode).toBe("plan");
+    // Claude enters plan mode only as the user sets it.
+    expect(fakeClaude.options.at(-1)!.disallowedTools).toEqual(["EnterPlanMode"]);
     // No approval of ExitPlanMode: the plan item is what Desktop asks "Implement this plan?" about once the turn completes.
     expect(asked).toEqual([]);
     expect(planned.turn.status).toBe("completed");
@@ -314,6 +316,23 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(fakeClaude.calls.filter((call) => call.method === "setPermissionMode").at(-1)!.args).toEqual(["bypassPermissions"]);
     expect(client.notifications("thread/settings/updated", threadId).at(-1)!.params.threadSettings.collaborationMode.mode).toBe("default");
     await client.turn(threadId, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag; this needs approval", { turnTrigger: "plan_implementation", collaborationMode: { mode: "default", settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } } });
+    expect(asked).toEqual([]);
+  });
+
+  it("leaves plan mode for the mode the chat had before it, after a restart too (read from the transcript)", async () => {
+    const threadId = await claudeThread();
+    const asked: any[] = [];
+    const mode = (name: string) => ({ mode: name, settings: { model: CLAUDE, reasoning_effort: null, developer_instructions: null } });
+    await client.turn(threadId, "one", { approvalPolicy: "never", permissions: ":danger-full-access" });
+    await client.turn(threadId, "propose a plan: 1. add the flag", { collaborationMode: mode("plan") });
+    await gateway.stop();
+    gateway = await startTestGateway();
+    client = await gateway.connect();
+    client.onRequest = (message) => { asked.push(message); return { decision: "accept" }; };
+    await client.request("thread/resume", { threadId });
+    await client.request("thread/settings/update", { threadId, collaborationMode: mode("default") });
+    await client.turn(threadId, "PLEASE IMPLEMENT THIS PLAN:\n1. add the flag; this needs approval", { collaborationMode: mode("default") });
+    expect(fakeClaude.options.at(-1)!.permissionMode).toBe("bypassPermissions");
     expect(asked).toEqual([]);
   });
 

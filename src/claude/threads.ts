@@ -269,7 +269,8 @@ export class ClaudeThreads {
     return nativeThread(session.threadId, {
       cwd: session.settings.cwd, gitBranch: null, createdAt: now, updatedAt: now, preview: "",
       customTitle: this.pendingNames.get(session.threadId) ?? null, aiTitle: null, model: session.settings.model, reasoningEffort: session.settings.effort,
-      serviceTier: session.settings.fast ? "fast" : null, permissionMode: session.settings.permissionMode, cliVersion: null, goal: null,
+      serviceTier: session.settings.fast ? "fast" : null, permissionMode: session.settings.permissionMode,
+      planFrom: session.settings.planFrom ?? null, cliVersion: null, goal: null,
     }, { status: this.status(session.threadId) });
   }
 
@@ -530,6 +531,7 @@ export class ClaudeThreads {
       effort: summary?.reasoningEffort ?? null,
       fast: summary?.serviceTier === "fast",
       permissionMode: (summary?.permissionMode ?? "default") as PermissionMode,
+      ...(summary?.permissionMode === "plan" && summary.planFrom ? { planFrom: summary.planFrom as PermissionMode } : {}),
     };
   }
 
@@ -801,7 +803,7 @@ export class ClaudeThreads {
       ...nativeThread(side.id, {
         cwd: side.cwd, gitBranch: null, createdAt: side.createdAt, updatedAt: side.createdAt, preview: "",
         customTitle: null, aiTitle: null, model: settings.model, reasoningEffort: settings.effort, serviceTier: null,
-        permissionMode: null, cliVersion: null, goal: null,
+        permissionMode: null, planFrom: null, cliVersion: null, goal: null,
       }, { status: { type: "idle" } }),
       ephemeral: true,
       forkedFromId: side.sourceId,

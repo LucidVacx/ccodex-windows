@@ -300,6 +300,8 @@ export class ClaudeSession {
       ...(settings.effort ? { effort: claudeEffort(settings.effort) as never } : {}),
       ...(settings.fast ? { settings: { fastMode: true } } : {}),
       permissionMode: settings.permissionMode,
+      // Claude enters plan mode only as the user sets it (stock's collaboration mode).
+      disallowedTools: ["EnterPlanMode"],
       // Claude 5 omits its thinking by default: summarized, it shows as the turn's reasoning summary like stock's.
       extraArgs: { "thinking-display": "summarized" },
       allowDangerouslySkipPermissions: true,
