@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { delegate } from "../cli/delegate.js";
-import { claudeHome, defaultConfigToml, displacedCodexPath, isCcodex, productHome, remoteCodexPath, type Config } from "../config.js";
+import { claudeHome, defaultConfigToml, displacedCodexPath, findInstalledCodex, isCcodex, productHome, remoteCodexPath, type Config } from "../config.js";
 import { probeAppServer } from "../daemon/probe.js";
 import { reconcileManagedProcess, stopManagedProcess } from "../daemon/supervisor.js";
 import { reconcileOwnedGateway, stopSocketOwner } from "../daemon/ownership.js";
@@ -182,6 +182,11 @@ export async function setup(args: readonly string[]): Promise<number> {
     });
   }
   keepClaudeTranscripts();
+  // CCodex runs the Codex that is installed (like install.sh, it installs one when there is none).
+  if (!findInstalledCodex(paths.home)) {
+    process.stdout.write("No codex on PATH: installing @openai/codex\n");
+    await execute("npm", ["install", "-g", "@openai/codex@latest", "--no-audit", "--no-fund"], { timeout: 20 * 60_000, maxBuffer: 8 * 1024 * 1024 });
+  }
   // 0.4 kept its threads in state.sqlite, 0.5 reads Claude's transcripts plus meta.json: migrate once, before activating.
   if (existsSync(join(paths.state, "state.sqlite")) && !existsSync(join(paths.state, "meta.json"))) {
     const migration = spawn(process.execPath, [join(target, "node_modules", PACKAGE, "scripts", "migrate-0.4-to-0.5.mjs")], { stdio: "inherit" });
