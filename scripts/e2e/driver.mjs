@@ -869,6 +869,12 @@ const scenarios = {
         return transcripts.has(thread.session) && !(expected === thread.session && backends.has(expected)) && !rows.has(expected);
       });
     check(!missing.length, "0.4 Claude threads listed", missing.slice(0, 20));
+    // 0.4 side chats (/btw forks) are no chats: only their sessions are there, archived.
+    const sides = new DatabaseSync("/mig/state04/handoffs.sqlite", { readOnly: true }).prepare("select public_thread_id id from side_threads").all()
+      .map(({ id }) => ({ id, session: state04.prepare("select claude_session_id session from threads where id = ?").get(id)?.session }))
+      .filter(({ session }) => transcripts.has(session));
+    const listedSides = sides.filter(({ id, session }) => rows.has(id) || !rows.get(session)?.archived);
+    check(sides.length > 0 && !listedSides.length, "0.4 side chats are not listed", { sides: sides.length, listed: listedSides });
 
     // A turn on the smallest migrated Claude thread keeps its 0.4 id.
     const alias = readable.filter((entry) => entry.segments === 1).sort((a, b) => a.size - b.size)[0];

@@ -4,6 +4,7 @@
 //
 // - Every 0.4 Claude thread keeps its id: meta.lineages[<0.4 id>] = [{ claude, <session id> }].
 // - Provider-switch lineages become segment lists; forks whose 0.4 id was no backend move to their current backend.
+// - 0.4 side chats (/btw, full Claude forks) are no chats: their sessions are archived, without a 0.4 id.
 // - Archive flags, sections and section order of Claude threads carry over; names go into the transcripts.
 // - Claude threads whose transcript Claude's cleanup deleted (cleanupPeriodDays, 30 by default) get one back from the
 //   0.4 turns: prompts and answers as text, without tool calls, reasoning or compactions. Claude resumes it as such.
@@ -51,13 +52,14 @@ const claudeThreads = new Map(state.prepare(`select id, claude_session_id, archi
   json_extract(thread_json, '$.parentThreadId') parent, json_extract(thread_json, '$.name') name,
   json_extract(thread_json, '$.section') section, json_extract(thread_json, '$.sectionEnteredAt') section_entered_at
   from threads`).all().map((row) => [row.id, row]));
+const sides = new Set(handoffs?.prepare("select public_thread_id from side_threads").all().map((row) => row.public_thread_id));
 
 // A turn's last record takes the uuid 0.4 kept for it, so provider-switch segments still end at that turn.
 for (const thread of state.prepare(`select id, claude_session_id, cwd, claude_code_version, coalesce(resolved_model, claude_model_value) model
   from threads where claude_session_id is not null and deletion_pending = 0
   and json_extract(thread_json, '$.parentThreadId') is null`).all()) {
   const sessionId = thread.claude_session_id;
-  if (transcripts.has(sessionId)) continue;
+  if (transcripts.has(sessionId) || sides.has(thread.id)) continue;
   const lines = [];
   let parentUuid = null;
   let at = 0;
@@ -144,6 +146,10 @@ const named = [];
 for (const thread of claudeThreads.values()) {
   const sessionId = thread.claude_session_id;
   if (thread.deletion_pending || thread.parent || !transcripts.has(sessionId)) continue;
+  if (sides.has(thread.id)) {
+    archived.add(sessionId);
+    continue;
+  }
   if (!lineages[thread.id] && !lineageBackends.has(thread.id) && thread.id !== sessionId) {
     lineages[thread.id] = [{ provider: "claude", threadId: sessionId, lastTurnId: null }];
   }
