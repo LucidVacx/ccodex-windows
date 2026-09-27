@@ -953,7 +953,7 @@ export class ClaudeThreads {
         const pausing = params.status === "paused" && current?.status === "active";
         const resuming = params.status === "active" && current?.status === "paused";
         if (!pausing && !resuming) return { goal: current };
-        const goal: JsonObject = { ...current!, status: params.status, updatedAt: now };
+        const goal: JsonObject = { ...current!, status: params.status, updatedAt: now, timeUsedSeconds: Math.max(0, now - current!.createdAt) };
         this.gateway.meta.setPausedGoal(threadId, pausing ? { objective: goal.objective, createdAt: goal.createdAt, updatedAt: now } : null);
         setImmediate(() => {
           this.gateway.emit(threadId, "thread/goal/updated", { threadId, turnId: null, goal });
