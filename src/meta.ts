@@ -124,6 +124,13 @@ export class Meta {
     this.save();
   }
 
+  /** A deleted section's Claude threads go back to no section, as stock's own do. */
+  public deleteSection(sectionId: string): void {
+    for (const [threadId, entry] of Object.entries(this.data.sections)) if (entry.sectionId === sectionId) delete this.data.sections[threadId];
+    delete this.data.sectionOrder[sectionId];
+    this.save();
+  }
+
   public sectionOrder(sectionId: string): readonly string[] { return this.data.sectionOrder[sectionId] ?? []; }
 
   public setSectionOrder(sectionId: string, ids: string[]): void {

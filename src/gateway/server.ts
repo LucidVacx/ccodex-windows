@@ -336,6 +336,11 @@ export class Gateway {
       on(method, (connection, params) => this.remote.pairing(method, params, connection.clientName));
     }
     on("thread/section/move", (connection, params) => this.catalog.moveInSection(connection, params));
+    on("threadSection/delete", async (connection, params) => {
+      const result = await connection.upstream.request("threadSection/delete", params);
+      this.meta.deleteSection(params.sectionId);
+      return result;
+    });
     // The App saves the picked model, effort and speed as Codex's defaults. With a Claude model they must not reach
     // config.toml (plain `codex` and every stock thread without explicit settings would use them): they stay in meta
     // and show in config/read.

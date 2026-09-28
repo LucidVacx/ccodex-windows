@@ -193,6 +193,7 @@ const handlers = {
     return runTurn(connection, thread, params);
   },
   "threadSection/list": () => ({ data: [{ id: "section-pinned", name: "Pinned", appearance: null }], nextCursor: null }),
+  "threadSection/delete": () => ({}),
   "thread/section/move": (_connection, params) => {
     if (params.beforeThreadId && !pinned.includes(params.beforeThreadId)) {
       throw Object.assign(new Error(`before thread ${params.beforeThreadId} is not in section ${params.sectionId}`), { code: -32600 });

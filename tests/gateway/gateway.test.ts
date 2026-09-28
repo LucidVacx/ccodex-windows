@@ -232,6 +232,15 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect((await client.request("thread/list", { limit: 50, sectionId: "section-pinned" })).data).toEqual([]);
   });
 
+  it("puts a deleted section's Claude threads back to no section, as stock does with its own", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "hi");
+    await client.request("thread/section/move", { threadId, sectionId: "section-pinned" });
+    await client.request("threadSection/delete", { sectionId: "section-pinned" });
+    const unsectioned = await client.request("thread/list", { limit: 50, sectionId: null });
+    expect(unsectioned.data.find((thread: any) => thread.id === threadId)?.section).toBeNull();
+  });
+
   it("keeps the manual order of a section across stock and Claude threads", async () => {
     const [a, c, b] = [await stockThread(), await claudeThread(), await stockThread()];
     await client.turn(c, "pin me");
