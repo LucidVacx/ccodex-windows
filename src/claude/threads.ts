@@ -117,7 +117,7 @@ export class ClaudeThreads {
         const id = summary.sessionId;
         if (!known.has(id) && !this.sessions.has(id) && !this.gateway.meta.hidden(id)) {
           this.gateway.broadcast("thread/started", { thread: this.decorate(nativeThread(id, header, { status: this.status(id) })) });
-        } else if (known.has(id) && known.get(id) !== name && name) {
+        } else if (known.has(id) && known.get(id) !== name && name && !this.gateway.meta.hidden(id)) {
           this.gateway.emit(id, "thread/name/updated", { threadId: id, threadName: name });
         }
         known.set(id, name);
@@ -1026,7 +1026,7 @@ export class ClaudeThreads {
       case "thread/backgroundTerminals/list": {
         const session = this.sessions.get(threadId);
         return {
-          data: [...session?.tasks.values() ?? []].filter((task) => task.taskType === "local_bash").map((task) => ({
+          data: (session?.backgroundTasks ?? []).filter((task) => task.taskType === "local_bash").map((task) => ({
             itemId: task.toolUseId ?? task.taskId, processId: task.taskId, command: task.description, cwd: session!.settings.cwd,
             osPid: null, cpuPercent: null, rssKb: null,
           })),
@@ -1329,7 +1329,7 @@ export class ClaudeThreads {
       usage: session?.totalUsage,
       contextWindow: this.contextWindow(session?.liveModel ?? settings.model),
       lastUsage: session?.lastUsage,
-      backgroundTasks: session?.tasks.size ?? 0,
+      backgroundTasks: session?.backgroundTasks.length ?? 0,
     };
   }
 

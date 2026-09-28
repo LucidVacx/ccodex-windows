@@ -252,6 +252,11 @@ export class ClaudeSession {
   }
 
   /** No turn runs, only background tasks. */
+  /** Tasks running on their own: not a command or sub-agent the turn still waits on (its call open). */
+  public get backgroundTasks(): BackgroundTask[] {
+    return [...this.tasks.values()].filter((task) => !task.toolUseId || !this.tools.has(task.toolUseId));
+  }
+
   public get waitingOnTasks(): boolean {
     return !this.turn && this.tasks.size > 0;
   }

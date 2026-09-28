@@ -617,6 +617,11 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const threadId = await claudeThread();
     const { turn } = await client.request("turn/start", { threadId, input: text("run until stopped: ticks") });
     await client.waitFor("item/started", (params) => params.threadId === threadId && params.item.type === "commandExecution");
+    // A command the turn waits on is no background task (/cc, Desktop's background terminals).
+    expect((await client.request("thread/backgroundTerminals/list", { threadId })).data).toEqual([]);
+    await client.request("turn/steer", { threadId, input: text("/cc"), expectedTurnId: turn.id });
+    await vi.waitFor(() => expect(client.notifications("item/completed", threadId).some((message) => message.params.item.text?.includes("working on a turn"))).toBe(true));
+    expect(client.notifications("item/completed", threadId).find((message) => message.params.item.text?.includes("working on a turn"))!.params.item.text).not.toContain("background task");
     await client.request("turn/interrupt", { threadId, turnId: turn.id });
     await client.waitFor("turn/completed", (params) => params.turn.id === turn.id);
     const command = (item: any) => [item.type, item.status, item.aggregatedOutput];
@@ -1533,6 +1538,26 @@ describe("titles (rename_prompt)", () => {
     const done = await client.turn(titleThread.id, "User prompt:\nhello", { turnTrigger: "thread_title" });
     expect(done.turn.status).toBe("completed");
     expect(client.notifications("item/completed", titleThread.id)).toHaveLength(0);
+  });
+
+  it("never shows the title Claude gives a switch's new Claude backend as the chat's name", async () => {
+    const threadId = await stockThread();
+    await client.request("thread/name/set", { threadId, name: "Greeting" });
+    await client.turn(threadId, "first");
+    const { turn } = await client.request("turn/start", { threadId, input: text("run until stopped: sleep 600"), model: CLAUDE });
+    await client.waitFor("item/started", (params) => params.threadId === threadId && params.item.type === "commandExecution");
+    const backendId = fakeClaude.prompts.at(-1)!.sessionId;
+    const projects = join(process.env.CLAUDE_CONFIG_DIR!, "projects");
+    const transcript = join(projects, readdirSync(projects).find((key) => existsSync(join(projects, key, `${backendId}.jsonl`)))!, `${backendId}.jsonl`);
+    // Like Claude: it titles a session while the turn runs, and retitles it later (the first title is the one it's first seen with).
+    for (const title of ["FIRST", "SECOND"]) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      appendFileSync(transcript, `${JSON.stringify({ type: "ai-title", aiTitle: title, sessionId: backendId })}\n`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await client.request("turn/interrupt", { threadId, turnId: turn.id });
+    await client.waitFor("turn/completed", (params) => params.turn.id === turn.id);
+    expect(client.notifications("thread/name/updated").map((message) => message.params.threadName)).not.toContain("SECOND");
   });
 
   it("keeps Claude's own title of a session unseen while CCodex names it", async () => {
