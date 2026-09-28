@@ -1349,12 +1349,16 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(turn.error.message).toContain("spawn claude EAGAIN");
   });
 
-  it("fails a Claude turn with Claude's error when Claude can't start", async () => {
+  it("fails a Claude turn with Claude's error when Claude can't start, and the next turn starts the chat anew", async () => {
     const threadId = await claudeThread();
     fakeClaude.spawnError = "spawn claude EAGAIN";
     const done = await client.turn(threadId, "hello");
     expect(done.turn.status).toBe("failed");
     expect(done.turn.error.message).toContain("spawn claude EAGAIN");
+    fakeClaude.spawnError = null;
+    expect((await client.turn(threadId, "again")).turn.status).toBe("completed");
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(itemsOf(thread.turns).slice(-2)).toEqual(["user:again", "agent:claude: again"]);
   });
 
   it("opens a freshly switched thread like Desktop: every turn of the first page paged from resume's items cursor", async () => {

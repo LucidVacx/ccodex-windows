@@ -357,6 +357,8 @@ export class ClaudeSession {
       if (this.turn) this.turn.error ??= `Claude stopped${failure}`;
     }
     if (this.sdk !== sdk) return;
+    // Claude stopped before it wrote anything (its first turn failed): the next turn starts the session anew.
+    if (failure && !this.transcriptPath()) this.exists = false;
     // Context Claude never took (it stopped, or never started) fails whoever waits on it.
     for (const { reject } of this.injections.values()) reject(new Error(`Claude stopped${failure}`));
     this.injections.clear();

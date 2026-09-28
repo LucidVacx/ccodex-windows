@@ -454,6 +454,7 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
   };
   async function* run(): AsyncGenerator<Message> {
     if (fakeClaude.spawnError) throw new Error(`Failed to spawn Claude Code process: ${fakeClaude.spawnError}`);
+    if (options.resume && !existsSync(transcript.path)) throw new Error(`No conversation found with session ID: ${options.resume}`);
     yield base(sessionId, { type: "system", subtype: "init", model: options.model ?? "claude-opus-5-5" });
     for await (const message of prompt) {
       if (closed) return;
