@@ -613,6 +613,24 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(fakeClaude.prompts.map((prompt) => prompt.text)).toEqual(["run until stopped: sleep 600", "after the stop"]);
   });
 
+  it("moves the command a turn waits on to the background on a steer, as Claude Code's send now: Claude reads the message at once", async () => {
+    const threadId = await claudeThread();
+    const { turn } = await client.request("turn/start", { threadId, input: text("run until stopped: sleep 600") });
+    await client.waitFor("item/started", (params) => params.threadId === threadId && params.item.type === "commandExecution");
+    await client.request("turn/steer", { threadId, input: text("how are you?"), expectedTurnId: turn.id });
+    expect(fakeClaude.calls.filter((call) => call.method === "backgroundTasks")).toEqual([{ method: "backgroundTasks", args: [undefined] }]);
+    await client.request("turn/interrupt", { threadId, turnId: turn.id });
+    await client.waitFor("turn/completed", (params) => params.turn.id === turn.id);
+  });
+
+  it("shows Claude's banners as Claude Code does: not its transcript-only info ones", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "banners");
+    const texts = client.notifications("item/completed", threadId).map((message) => message.params.item.text);
+    expect(texts).toContain("a warning");
+    expect(texts).not.toContain("transcript-only detail");
+  });
+
   it("shows the output a command Stop killed had so far, not Claude's refusal of the call (live and after a restart)", async () => {
     const threadId = await claudeThread();
     const { turn } = await client.request("turn/start", { threadId, input: text("run until stopped: ticks") });

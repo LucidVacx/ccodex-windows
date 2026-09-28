@@ -76,7 +76,7 @@ Codex unchanged. No CCodex servers, no telemetry; MIT-licensed.
 | **OS** | macOS 11+ on Apple silicon · Linux x64 or arm64 with glibc ≥ 2.31 (no Alpine/musl) · Bash, Zsh or Fish |
 | **Node.js** | `>=22.13 <27` (22 or 24 LTS recommended), npm `>=10` |
 | **Codex CLI** | any recent version; installed for you if missing. Tested with `0.156` and `0.157` |
-| **Claude Code** | nothing to install: the Agent SDK brings it (`0.3.280` / Claude Code `2.1.280`) |
+| **Claude Code** | nothing to install: the Agent SDK brings it (`0.3.284` / Claude Code `2.1.284`) |
 
 Don't run the installer or setup as root or with `sudo`.
 

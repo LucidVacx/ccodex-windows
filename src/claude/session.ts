@@ -441,6 +441,12 @@ export class ClaudeSession {
     this.pendingInputs.set(uuid, { input, clientId: params.clientUserMessageId ?? null, hidden: false });
     this.ensureQuery();
     this.inbox!.push(userMessage(await claudeContent(input, this.settings.cwd), uuid));
+    // As Claude Code's "send now" (and stock's steer): what the turn waits on moves to the background, so Claude reads
+    // the message at that tool result, not after a long command. The message is written first.
+    if (this.sdk && [...this.tasks.values()].some((task) => task.toolUseId && this.tools.has(task.toolUseId))) {
+      await new Promise((resolve) => setImmediate(resolve));
+      await this.sdk.backgroundTasks().catch(() => false);
+    }
     return this.turn.id;
   }
 
@@ -881,9 +887,12 @@ export class ClaudeSession {
       case "local_command_output":
         this.systemText(String(m.content ?? ""));
         return;
+      case "informational":
+        // Claude Code shows `info` banners only in its transcript view.
+        if (m.level === "info") return;
+      // falls through
       case "model_refusal_fallback":
       case "notification":
-      case "informational":
         if (typeof m.text === "string" || typeof m.message === "string" || typeof m.content === "string") {
           this.systemText(String(m.text ?? m.message ?? m.content));
         }

@@ -294,6 +294,10 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     yield* finish("", "error_during_execution");
     return;
   }
+  // Like Claude Code (0.3.283+): banners raised during a turn, at their render level.
+  if (text === "banners") {
+    for (const [level, content] of [["info", "transcript-only detail"], ["warning", "a warning"]]) yield base(sessionId, { type: "system", subtype: "informational", level, content });
+  }
   const fileTool = text.includes("needs file approval");
   if (text.includes("needs approval") || fileTool) {
     const toolUseId = `toolu_${randomUUID().slice(0, 8)}`;
