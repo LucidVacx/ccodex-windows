@@ -134,14 +134,15 @@ function siblingBlocks(
 }
 
 /** A message another agent sent: a meta record Claude answers like a prompt, or (while it works) a queued command. */
-function peerMessage(record: TranscriptChainRecord): boolean {
+/** Another agent's message, or any message Claude folded into a running turn (a steer too). */
+function sentMessage(record: TranscriptChainRecord): boolean {
   if (record.type === "user") return record.origin?.kind === "peer";
-  const attachment = record.type === "attachment" ? record.attachment as { type?: unknown; origin?: { kind?: unknown } } | undefined : undefined;
-  return attachment?.type === "queued_command" && attachment.origin?.kind === "peer";
+  const attachment = record.type === "attachment" ? record.attachment as { type?: unknown } | undefined : undefined;
+  return attachment?.type === "queued_command";
 }
 
 function visible(record: TranscriptChainRecord): boolean {
-  const peer = peerMessage(record);
+  const peer = sentMessage(record);
   if (record.type !== "user" && record.type !== "assistant" && record.type !== "system" && !peer) return false;
   return (record.isMeta !== true || peer) && record.isSidechain !== true && !record.teamName;
 }

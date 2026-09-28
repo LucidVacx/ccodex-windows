@@ -1,9 +1,9 @@
 // Scripted stand-in for the Claude Agent SDK `query()`: answers each pushed message, streams like the real CLI and
 // persists the same transcript records under $CLAUDE_CONFIG_DIR/projects, so the native catalog/projector read it.
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 type Message = Record<string, any>;
 
@@ -92,6 +92,9 @@ class Transcript {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Ends the command Claude waits on (an interrupt does); `backgrounded`: sent to the background (Ctrl+B) first. */
+let stopCommand: (() => void) | undefined;
+let backgrounded = false;
 /** Ends the goal Claude is pursuing (an interrupt does). */
 let stopGoal: (() => void) | undefined;
 /** An interrupt that came before the goal it stops started (Claude drops the command it had yet to run). */
@@ -264,6 +267,32 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     const message = `Successfully stopped task: bg1 (${background[1]})`;
     yield* toolResult(call, JSON.stringify({ message }), { message, task_id: "bg1", task_type: "local_bash", command: background[1] });
     reply = "stopped";
+  }
+  // Like Claude: a command it waits on, with output in its task's file. Stop kills it: Claude refuses the call and
+  // queues (never sends) a notification naming no file; only a command sent to the background first keeps its file.
+  const waited = /^run until stopped: (.+)$/u.exec(text);
+  if (waited) {
+    const call = tool(`msg_${randomUUID().slice(0, 8)}`, 0, "Bash", { command: waited[1], timeout: 600000 });
+    const toolUseId = call.message.content[0].id;
+    transcript.write(call);
+    yield base(sessionId, call);
+    yield base(sessionId, { type: "system", subtype: "task_started", task_id: "fg1", tool_use_id: toolUseId, description: waited[1], task_type: "local_bash", is_backgrounded: false });
+    const file = join(tmpdir(), `claude-${process.getuid!()}`, (options.cwd ?? process.cwd()).replace(/[^a-zA-Z0-9]/gu, "-"), sessionId, "tasks", "fg1.output");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "tick 1\ntick 2\n");
+    backgrounded = false;
+    await new Promise<void>((resolve) => { stopCommand = resolve; });
+    stopCommand = undefined;
+    yield base(sessionId, { type: "system", subtype: "task_notification", task_id: "fg1", tool_use_id: toolUseId, status: "stopped", output_file: backgrounded ? file : "", summary: waited[1] });
+    appendFileSync(transcript.path, `${JSON.stringify({ type: "queue-operation", operation: "enqueue", timestamp: new Date().toISOString(), sessionId,
+      content: `<task-notification>\n<task-id>fg1</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>killed</status>\n<summary>Task "${waited[1]}" was stopped by the user</summary>\n</task-notification>` })}\n`);
+    if (!backgrounded) rmSync(file);
+    const content = [{ type: "tool_result", tool_use_id: toolUseId, content: "The user doesn't want to proceed with this tool use. The tool use was rejected.", is_error: true }];
+    transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: "User rejected tool use" });
+    yield base(sessionId, { type: "user", message: { role: "user", content }, tool_use_result: "User rejected tool use" });
+    transcript.write({ type: "user", message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] } });
+    yield* finish("", "error_during_execution");
+    return;
   }
   const fileTool = text.includes("needs file approval");
   if (text.includes("needs approval") || fileTool) {
@@ -476,11 +505,19 @@ export function fakeQuery({ prompt, options }: { prompt: AsyncIterable<Message>;
     // Asked for JSON, Claude's side question still wraps it in prose.
     askSideQuestion: (question: string) => Promise.resolve({ response: question.includes("JSON Schema")
       ? `Here it is:\n\`\`\`json\n${JSON.stringify({ description: `side: ${question.split("\n")[0]}` })}\n\`\`\`` : `side: ${question}` }),
+    // Like Claude: `cancelQueued` drops the messages sent meanwhile it has yet to read; otherwise it runs them after.
     interrupt: (...args: unknown[]) => {
-      if (stopGoal) stopGoal();
+      const cancelled = (args[0] as Message | undefined)?.cancelQueued ? (prompt as unknown as { items: Message[] }).items.splice(0).map((message) => message.uuid) : [];
+      if (stopCommand) stopCommand();
+      else if (stopGoal) stopGoal();
       else stopEarly = true;
       stopGoal = undefined;
-      return record("interrupt")(...args);
+      fakeClaude.calls.push({ method: "interrupt", args });
+      return Promise.resolve({ still_queued: [], cancelled });
+    },
+    backgroundTasks: (toolUseId?: string) => {
+      backgrounded = stopCommand !== undefined;
+      return record("backgroundTasks")(toolUseId).then(() => backgrounded);
     },
     // Like Claude with CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000: Haiku's own window is smaller.
     getContextUsage: () => Promise.resolve({ maxTokens: String(options.model).includes("haiku") ? 200_000 : 400_000 }),

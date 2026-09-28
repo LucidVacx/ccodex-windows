@@ -7,7 +7,9 @@ import { normalizeClaudeModelIdentifier } from "../modelSelection.js";
 import { NO_PEERS, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type PeerDirectory, type Peers } from "../peers.js";
 import {
   endedBackground,
+  killedCommand,
   projectToolCompletion,
+  taskOutputFile,
   startTool,
   stoppedCommand,
   taskNotification,
@@ -62,6 +64,13 @@ export interface ProjectTranscriptInput {
 /** How background commands ended, by task id: Claude's task notifications and its stops of them (TaskStop). */
 export function backgroundEnds(records: readonly TranscriptRecord[], ends = new Map<string, BackgroundEnd>()): Map<string, BackgroundEnd> {
   for (const record of records) {
+    // A command Stop killed: Claude queues its notification but never sends it (a sent one, later, tells more).
+    const killed = record.type === "queue-operation" && record.operation === "enqueue"
+      ? taskNotification(record.content ?? "", Date.parse(record.timestamp ?? "")) : undefined;
+    if (killed) {
+      ends.set(killed.taskId, killed.end);
+      if (killed.toolUseId) ends.set(killed.toolUseId, { ...killed.end, taskId: killed.taskId });
+    }
     if (record.type !== "user") continue;
     const atMs = Date.parse(record.timestamp);
     const notified = record.origin?.kind === "task-notification" ? taskNotification(userText(record), atMs) : undefined;
@@ -307,10 +316,14 @@ function projectTool(
   // A background command runs on past its turn: it ends as its task notification (or a stop) tells. With neither, its
   // Claude process ended first (a running one shows live).
   const taskId = typeof fields?.backgroundTaskId === "string" ? fields.backgroundTaskId : undefined;
+  const output = (end: BackgroundEnd, task: string) => end.outputFile ?? taskOutputFile(cwd, record.sessionId, task);
+  const killed = taskId ? undefined : ends.get(block.id);
+  if (killed?.taskId) return killedCommand(completed, output(killed, killed.taskId));
   if (!taskId || completed.type !== "commandExecution") return completed;
   const background = { ...completed, processId: taskId };
   const end = ends.get(taskId);
-  return end ? endedBackground(background, end, startedAtMs) : { ...background, status: "failed", exitCode: null, aggregatedOutput: null };
+  return end ? endedBackground(background, { ...end, outputFile: output(end, taskId) }, startedAtMs)
+    : { ...background, status: "failed", exitCode: null, aggregatedOutput: null };
 }
 
 /** A started tool item completed by its tool_result; shared by history projection and the live stream. */
@@ -592,8 +605,9 @@ function projectTurns(
       else if (record.type === "user" && peerOrigin(record.origin)) {
         items.push(peerMessageItem(record.uuid, peerOrigin(record.origin)!, userText(record), peers));
       }
+      // A steer's id is the client's own (Desktop shows a message of a turn after its first only with it).
       else if (record.type === "user" && steered.has(record.uuid)) {
-        items.push({ type: "userMessage", id: record.uuid, clientId: null, content: userInputs(record) });
+        items.push({ type: "userMessage", id: record.uuid, clientId: record.uuid, content: userInputs(record) });
       } else if (record.type === "system" && record.subtype === "local_command" && typeof record.content === "string") {
         const text = record.content.replace(/<\/?local-command-std(?:out|err)>/gu, "").trim();
         // Claude's own word on `/goal` ("Goal set: …"): Codex clients show goals themselves.
@@ -605,11 +619,9 @@ function projectTurns(
         const peer = peerOrigin(attachment?.origin);
         if (attachment?.type === "queued_command" && peer) {
           items.push(peerMessageItem(string(attachment.source_uuid) ?? record.uuid, peer, string(attachment.prompt) ?? "", peers));
-        } else if (attachment?.type === "queued_command" && attachment.commandMode === "prompt" && typeof attachment.prompt === "string") {
-          items.push({
-            type: "userMessage", id: string(attachment.source_uuid) ?? record.uuid, clientId: null,
-            content: [{ type: "text", text: attachment.prompt, text_elements: [] }],
-          });
+        } else if (attachment?.type === "queued_command" && attachment.commandMode === "prompt" && (typeof attachment.prompt === "string" || Array.isArray(attachment.prompt))) {
+          const id = string(attachment.source_uuid) ?? record.uuid;
+          items.push({ type: "userMessage", id, clientId: id, content: userInputs({ message: { content: attachment.prompt } } as UserRecord) });
         }
       }
     }

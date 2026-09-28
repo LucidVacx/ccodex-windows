@@ -601,6 +601,34 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(itemsOf(thread.turns).filter((item: string) => item.startsWith("user:"))).toEqual(["user:this needs approval"]);
   });
 
+  it("drops a message steered into a command Claude waits on when Stop comes first, as stock and Claude Code do", async () => {
+    const threadId = await claudeThread();
+    const { turn } = await client.request("turn/start", { threadId, input: text("run until stopped: sleep 600") });
+    await client.waitFor("item/started", (params) => params.threadId === threadId && params.item.type === "commandExecution");
+    await client.request("turn/steer", { threadId, input: text("how are you?"), expectedTurnId: turn.id });
+    await client.request("turn/interrupt", { threadId, turnId: turn.id });
+    expect((await client.waitFor("turn/completed", (params) => params.turn.id === turn.id)).turn.status).toBe("interrupted");
+    const next = await client.turn(threadId, "after the stop");
+    expect(next.turn.id).not.toBe(turn.id);
+    expect(fakeClaude.prompts.map((prompt) => prompt.text)).toEqual(["run until stopped: sleep 600", "after the stop"]);
+  });
+
+  it("shows the output a command Stop killed had so far, not Claude's refusal of the call (live and after a restart)", async () => {
+    const threadId = await claudeThread();
+    const { turn } = await client.request("turn/start", { threadId, input: text("run until stopped: ticks") });
+    await client.waitFor("item/started", (params) => params.threadId === threadId && params.item.type === "commandExecution");
+    await client.request("turn/interrupt", { threadId, turnId: turn.id });
+    await client.waitFor("turn/completed", (params) => params.turn.id === turn.id);
+    const command = (item: any) => [item.type, item.status, item.aggregatedOutput];
+    const live = client.notifications("item/completed", threadId).map((message) => message.params.item).find((item) => item.type === "commandExecution");
+    expect(command(live)).toEqual(["commandExecution", "failed", "tick 1\ntick 2\n"]);
+    await gateway.stop();
+    gateway = await startTestGateway();
+    client = await gateway.connect();
+    const { thread } = await client.request("thread/read", { threadId, includeTurns: true });
+    expect(command(thread.turns[0].items.find((item: any) => item.type === "commandExecution"))).toEqual(command(live));
+  });
+
   it("serves /side on a Claude thread through the source session", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "context");

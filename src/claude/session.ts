@@ -20,7 +20,7 @@ import { userText } from "./native/summary.js";
 import { claudeEffort, DELEGATION_OFF, DELEGATION_ON, ULTRA } from "./delegation.js";
 import { foreignOwner, peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
 import { baseOptions, claudeMode } from "./sdk.js";
-import { endedBackground, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
+import { endedBackground, killedCommand, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
 import type { ClaudeThreads } from "./threads.js";
 
 export interface SessionSettings {
@@ -89,6 +89,7 @@ function lastPrompt(path: string): UserRecord | undefined {
 }
 
 /** How long a process started ahead of a first prompt waits for it. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const WARM_MS = 10 * 60_000;
 
 interface WarmProcess {
@@ -169,6 +170,8 @@ export class ClaudeSession {
   public readonly tasks = new Map<string, BackgroundTask>();
   /** Background commands running on past their turn (stock's background terminals), by task id. */
   private readonly background = new Map<string, { item: ThreadItem; turnId: string; startedAtMs: number }>();
+  /** Output files of commands Stop killed while Claude waited on them, by their call. */
+  private readonly killed = new Map<string, string>();
   /** TaskStop calls: shown on the command they stop, as stock shows a Ctrl-C (by tool use id). */
   private readonly stops = new Map<string, Tool>();
   /** Claude's sub-agents running (in the background they keep no turn open: each has a chat of its own). */
@@ -428,7 +431,8 @@ export class ClaudeSession {
   public async steer(params: JsonObject): Promise<string> {
     if (!this.turn) throw invalidRequest("no active turn to steer");
     const input = normalizeUserInput(params.input ?? []);
-    const uuid = randomUUID();
+    // The client's id is the message's in the transcript: history gives it back as the message's client id.
+    const uuid: string = UUID.test(params.clientUserMessageId ?? "") ? params.clientUserMessageId : randomUUID();
     this.pendingInputs.set(uuid, { input, clientId: params.clientUserMessageId ?? null, hidden: false });
     this.ensureQuery();
     this.inbox!.push(userMessage(await claudeContent(input, this.settings.cwd), uuid));
@@ -484,7 +488,13 @@ export class ClaudeSession {
     this.host.gateway.cancelServerRequests(this.threadId);
     // Stop stops all Claude runs: its background tasks and sub-agents too (a message sent meanwhile leaves them running).
     const sdk = this.sdk;
-    await Promise.all([sdk.interrupt(), ...[...this.tasks.keys(), ...this.agents].map((id) => sdk.stopTask(id))].map((done) => done.catch(() => undefined)));
+    // A command Claude waits on goes to the background first: only there Claude keeps a killed command's output.
+    await Promise.all([...this.tasks.values()].filter((task) => task.taskType === "local_bash" && task.toolUseId && !this.background.has(task.taskId))
+      .map((task) => sdk.backgroundTasks(task.toolUseId).catch(() => false)));
+    // As stock and Claude Code's own Stop: messages steered in but not yet read are dropped, not run after it.
+    const interrupt = (sdk.interrupt as (options: { cancelQueued: boolean }) => Promise<{ cancelled?: string[] } | undefined>)({ cancelQueued: true })
+      .then((receipt) => { for (const uuid of receipt?.cancelled ?? []) this.pendingInputs.delete(uuid); });
+    await Promise.all([interrupt, ...[...this.tasks.keys(), ...this.agents].map((id) => sdk.stopTask(id))].map((done) => done.catch(() => undefined)));
     for (const taskId of this.tasks.keys()) this.endBackground(taskId, { status: "stopped", summary: "", atMs: Date.now() });
     this.tasks.clear();
     this.agents.clear();
@@ -848,6 +858,7 @@ export class ClaudeSession {
         this.tasks.set(m.task_id, { taskId: m.task_id, toolUseId: m.tool_use_id, description: m.description ?? "", taskType: m.task_type });
         return;
       case "task_notification":
+        if (m.status === "stopped" && m.tool_use_id && m.output_file && !this.background.has(m.task_id)) this.killed.set(m.tool_use_id, m.output_file);
         this.tasks.delete(m.task_id);
         this.agents.delete(m.task_id);
         this.host.subagentFinished(`agent-${m.task_id}`);
@@ -1080,7 +1091,10 @@ export class ClaudeSession {
         continue;
       }
       // The result tells where a message went (its msg_id) when the call alone did not.
-      const item = completedToolItem({ ...tool, item: sentMessageItem(tool.item, tool.state.input, result, this.peers) }, { record: { toolUseResult: result }, block }, this.settings.cwd);
+      const completed = completedToolItem({ ...tool, item: sentMessageItem(tool.item, tool.state.input, result, this.peers) }, { record: { toolUseResult: result }, block }, this.settings.cwd);
+      const killed = this.killed.get(block.tool_use_id);
+      this.killed.delete(block.tool_use_id);
+      const item = killed ? killedCommand(completed, killed) : completed;
       if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.receiverThreadIds.length) {
         this.host.subagentSpawned(this, item, result?.status === "async_launched");
       }

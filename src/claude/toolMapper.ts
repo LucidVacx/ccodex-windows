@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join, resolve } from "node:path";
 import { claudeHome } from "../config.js";
 import type { JsonValue, ThreadItem } from "../protocol/codex.js";
@@ -22,6 +23,8 @@ export interface BackgroundEnd {
   readonly summary: string;
   readonly outputFile?: string;
   readonly atMs: number;
+  /** The task, when the end is found by its call (a command Stop killed while Claude waited on it). */
+  readonly taskId?: string;
 }
 
 const BACKGROUND_OUTPUT_BYTES = 256 << 10;
@@ -46,6 +49,16 @@ export function endedBackground(item: ThreadItem, end: BackgroundEnd, startedAtM
   };
 }
 
+/** Claude's file of a command's output (the notification of a command Stop killed does not name it). */
+export function taskOutputFile(cwd: string, sessionId: string, taskId: string): string {
+  return join(tmpdir(), `claude-${process.getuid?.() ?? 0}`, cwd.replace(/[^a-zA-Z0-9]/gu, "-"), sessionId, "tasks", `${taskId}.output`);
+}
+
+/** A command Stop killed while Claude waited on it: its output so far, as stock's, not Claude's refusal of the call. */
+export function killedCommand(item: ThreadItem, outputFile: string): ThreadItem {
+  return item.type === "commandExecution" ? { ...item, status: "failed", exitCode: null, aggregatedOutput: outputTail(outputFile) } : item;
+}
+
 /** The background command a TaskStop result stopped (its task id). */
 export function stoppedCommand(result: Record<string, unknown> | undefined): string | undefined {
   return result?.task_type === "local_bash" && typeof result.task_id === "string" && typeof result.message === "string"
@@ -53,13 +66,14 @@ export function stoppedCommand(result: Record<string, unknown> | undefined): str
 }
 
 /** A task notification Claude takes as a prompt: `<task-id>`, `<status>`, `<summary>`, `<output-file>`. */
-export function taskNotification(text: string, atMs: number): { taskId: string; end: BackgroundEnd } | undefined {
+export function taskNotification(text: string, atMs: number): { taskId: string; toolUseId?: string; end: BackgroundEnd } | undefined {
   const field = (name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, "u").exec(text)?.[1];
   const taskId = field("task-id");
   const status = field("status");
   if (!taskId || !status) return undefined;
   const outputFile = field("output-file");
-  return { taskId, end: { status, summary: field("summary") ?? "", ...(outputFile ? { outputFile } : {}), atMs } };
+  const toolUseId = field("tool-use-id");
+  return { taskId, ...(toolUseId ? { toolUseId } : {}), end: { status, summary: field("summary") ?? "", ...(outputFile ? { outputFile } : {}), atMs } };
 }
 
 const fileTools = new Set(["Edit", "Write", "NotebookEdit"]);

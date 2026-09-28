@@ -27,16 +27,19 @@ describe("native Claude fixtures", () => {
   it("keeps the compaction marker and the complete pre-compaction turn history", async () => {
     const projection = await fixture("a0cd4fcb-7bd4-43fa-b0d3-7d46e39e912a");
 
-    // One turn Claude went on in after a finished task woke it up.
+    // One turn Claude went on in after a finished task woke it up; a message steered in mid-turn shows where Claude read it.
     expect(projection.turns).toHaveLength(8);
     expect(projection.compactionBoundaries.size).toBe(1);
     expect(projection.turns.at(-1)!.items.map((item) => item.type)).toEqual([
       "userMessage", "reasoning", "agentMessage", "commandExecution", "reasoning",
       "commandExecution", "commandExecution", "reasoning", "commandExecution", "reasoning",
-      "commandExecution", "reasoning", "commandExecution", "reasoning", "commandExecution",
+      "commandExecution", "reasoning", "commandExecution", "userMessage", "reasoning", "commandExecution",
       "reasoning", "commandExecution", "reasoning", "commandExecution", "reasoning",
       "commandExecution", "reasoning", "commandExecution", "contextCompaction",
     ]);
+    // Desktop shows a message of a turn after its first only with its client id.
+    const steer = projection.turns.at(-1)!.items.filter((item) => item.type === "userMessage")[1]!;
+    expect(steer).toMatchObject({ id: "01a0a4d1-33f8-756c-ab81-5dad4a725919", clientId: "01a0a4d1-33f8-756c-ab81-5dad4a725919" });
   });
 
   it("projects the root and retained sub-agent threads", async () => {
