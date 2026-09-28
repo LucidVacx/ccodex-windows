@@ -1274,7 +1274,10 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const { thread } = await client.request("thread/start", { model: CLAUDE, cwd: "/work/remote-project" });
     const environments = [{ environmentId: "local", cwd: "/work/remote-project", runtimeWorkspaceRoots: ["/work/remote-project"] }];
     expect(thread.environments).toEqual(environments);
-    expect(client.notifications("thread/started").find((message) => message.params.thread.id === thread.id)?.params.thread.environments).toEqual(environments);
+    // Announced after the response, as stock: before it Desktop can't tell its new-chat draft and lists it as a chat.
+    await vi.waitFor(() => expect(client.notifications("thread/started").find((message) => message.params.thread.id === thread.id)?.params.thread.environments).toEqual(environments));
+    const order = client.messages.filter((message) => message.result?.thread?.id === thread.id || message.params?.thread?.id === thread.id);
+    expect(order.map((message) => message.method ?? "response")).toEqual(["response", "thread/started"]);
   });
 
   it("keeps CCodex's internal threads out of the clients' view (switch summaries, the new Claude backend)", async () => {

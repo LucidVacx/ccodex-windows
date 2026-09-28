@@ -1096,7 +1096,8 @@ export class ClaudeThreads {
     const threadId = session.threadId;
     this.gateway.subscribe(threadId, connection);
     const thread = this.decorate(this.freshThread(session));
-    this.gateway.emit(threadId, "thread/started", { thread });
+    // After the response, as stock: Desktop hides its new-chat draft's `thread/started` only once it knows the id.
+    setImmediate(() => this.gateway.emit(threadId, "thread/started", { thread }));
     this.gateway.titles.track(threadId);
     this.prewarm(session);
     return { thread, ...this.settingsResponse(settings) };
@@ -1234,7 +1235,7 @@ export class ClaudeThreads {
     const thread = await this.thread(sessionId);
     const turns = params.excludeTurns ? [] : (await this.newestTurns(sessionId, 25)).turns;
     const forked = { ...thread, forkedFromId: sourceId };
-    this.gateway.emit(sessionId, "thread/started", { thread: forked });
+    setImmediate(() => this.gateway.emit(sessionId, "thread/started", { thread: forked }));
     const settings = this.settingsFrom(params, this.settings(sourceId));
     this.sessions.set(sessionId, new ClaudeSession(this, sessionId, settings, { exists: true }));
     return { thread: { ...forked, turns }, ...this.settingsResponse(settings) };
