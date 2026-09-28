@@ -588,8 +588,9 @@ export class Lineages {
     const permissions = permissionSettings({ approvalPolicy: stock.approvalPolicy, approvalsReviewer: stock.approvalsReviewer, sandboxPolicy: stock.sandbox }, { permissionMode: "default", plan: false });
     const found: JsonObject = await connection.upstream.request("thread/goal/get", { threadId: source.threadId });
     const goal = found.goal?.status === "complete" ? null : found.goal;
-    // The goal goes on with the chat's next backend: stock pursues it no more.
-    if (goal) await connection.upstream.request("thread/goal/clear", { threadId: source.threadId });
+    // The goal goes on with the chat's next backend: stock pursues it no more (a paused one it doesn't; clearing it
+    // would blink the goal away for every client until the switch ends).
+    if (goal?.status === "active") await connection.upstream.request("thread/goal/clear", { threadId: source.threadId });
     const session = this.gateway.claude.create(this.gateway.claude.settingsFrom(params, { cwd: stock.cwd, model: null, effort: null, fast: false, ...permissions }));
     // A backend from its first record on: its transcript is on disk before the lineage lists it.
     this.newBackends.add(session.threadId);
@@ -621,7 +622,7 @@ export class Lineages {
       return answer;
     } catch (error) {
       await this.gateway.claude.discard(session.threadId);
-      if (goal) await connection.upstream.request("thread/goal/set", { threadId: source.threadId, objective: goal.objective, status: goal.status });
+      if (goal?.status === "active") await connection.upstream.request("thread/goal/set", { threadId: source.threadId, objective: goal.objective, status: goal.status });
       return failed(turn, error);
     }
   }
