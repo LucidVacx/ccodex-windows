@@ -163,6 +163,8 @@ const PLAN_PROPOSED = "The plan is shown to the user, who answers in their next 
  */
 export class ClaudeSession {
   public turn: ActiveTurn | undefined;
+  /** A turn was started here: before that the chat is Desktop's new-chat draft, which stock lists nowhere. */
+  public started = false;
   public state: "idle" | "running" | "requires_action" = "idle";
   public readonly tasks = new Map<string, BackgroundTask>();
   /** Background commands running on past their turn (stock's background terminals), by task id. */
@@ -559,6 +561,7 @@ export class ClaudeSession {
   private openTurn(id: string, input: UserInput[], clientId: string | null, hidden: boolean, announced = false): Turn {
     const turn = this.newTurnObject(id);
     this.turn = { id, startedAt: Date.now(), items: turn.items, resultSeen: false, interrupted: false, error: null };
+    this.started = true;
     this.activeAt = Date.now();
     this.afterResult = false;
     this.notified = false;

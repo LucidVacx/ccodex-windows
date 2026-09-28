@@ -570,7 +570,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(answerOf(threadId)).toMatch(/\| \*\*Claude 5h\*\* \| `█+░+` 10% · resets [^|]+ \|\n\| \*\*Claude week\*\* \| `█+░+` 6% · resets [^|]+ \|\n\| \*\*Codex/u);
   });
 
-  it("answers /cc sent while a turn runs inside that turn, never telling the model", async () => {
+  it("answers /cc sent while a turn runs (steered or queued) at once inside that turn, never telling the model", async () => {
     const threadId = await claudeThread();
     // The turn waits on its tool approval until the test answers it.
     let approve!: () => void;
@@ -581,6 +581,10 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await vi.waitFor(() => expect(client.notifications("item/completed", threadId).map((message) => message.params)
       .find((params) => params.item.type === "agentMessage" && params.item.text.includes("🟢 Running"))?.turnId).toBe(turn.id));
     expect(client.notifications("item/completed", threadId).find((message) => message.params.item.clientId === "c1")!.params.turnId).toBe(turn.id);
+    // Desktop's skill chip, queued behind the running turn.
+    await client.request("thread/queue/add", { threadId, input: text("[$ccodex:status](/x/ccodex-status/SKILL.md) \n"), clientUserMessageId: "c2" });
+    await vi.waitFor(() => expect(client.notifications("item/completed", threadId).find((message) => message.params.item.clientId === "c2")?.params.turnId).toBe(turn.id));
+    expect((await client.request("thread/queue/list", { threadId })).data).toEqual([]);
     approve();
     await client.waitFor("turn/completed", (params) => params.turn.id === turn.id);
     expect(fakeClaude.prompts.map((prompt) => prompt.text)).toEqual(["this needs approval"]);
@@ -1313,6 +1317,14 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await expect(client.request("thread/resume", { threadId: gone })).rejects.toThrow(`no rollout found for thread id ${gone}`);
     expect(client.notifications("thread/deleted").map((message) => message.params)).toEqual([{ threadId: gone }]);
     expect(other.notifications("thread/deleted")).toEqual([]);
+  });
+
+  it("lists a new Claude chat only once a turn starts in it (before that it is Desktop's new-chat draft)", async () => {
+    const threadId = await claudeThread();
+    const listed = async () => (await client.request("thread/list", { limit: 500 })).data.map((row: any) => row.id);
+    expect(await listed()).not.toContain(threadId);
+    await client.turn(threadId, "hi");
+    expect(await listed()).toContain(threadId);
   });
 
   it("never lists a switch's new Claude backend, even while the switch is still writing it", async () => {

@@ -269,7 +269,7 @@ export class ClaudeThreads {
     const rows = this.catalog.sessions().map((summary) =>
       this.decorate(nativeThread(summary.sessionId, this.headerOf(summary, this.sessions.get(summary.sessionId)), { status: this.status(summary.sessionId) })));
     for (const session of this.sessions.values()) {
-      if (!this.catalog.get(session.threadId)) rows.push(this.decorate(this.freshThread(session)));
+      if (session.started && !this.catalog.get(session.threadId)) rows.push(this.decorate(this.freshThread(session)));
     }
     return rows;
   }
@@ -1324,7 +1324,7 @@ export class ClaudeThreads {
       loaded: session !== undefined,
       process: session?.loaded ?? false,
       actions: this.actions.get(threadId) ?? [],
-      running: session?.busy ?? false,
+      turnId: session?.turn?.id ?? null,
       usage: session?.totalUsage,
       contextWindow: this.contextWindow(session?.liveModel ?? settings.model),
       lastUsage: session?.lastUsage,

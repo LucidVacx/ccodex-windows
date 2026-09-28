@@ -194,7 +194,7 @@ export class Gateway {
     if (isStatusTurn(params.lastTurnId) || isStatusTurn(params.beforeTurnId)) {
       return async () => { throw invalidRequest("This is a CCodex status message, not part of the chat: it can't be forked or edited."); };
     }
-    if ((method === "turn/start" || method === "turn/steer") && isStatusCommand(params)) {
+    if ((method === "turn/start" || method === "turn/steer" || method === "thread/queue/add") && isStatusCommand(params)) {
       return (conn, p) => statusCommand(this, conn, method, p);
     }
     if (method === "turn/start") {

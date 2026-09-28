@@ -100,14 +100,14 @@ async function statusText(gateway: Gateway, connection: Connection, threadId: st
   if (gateway.isClaudeThread(threadId)) {
     const state = gateway.claude.state(current);
     const usage = state.lastUsage as JsonObject | undefined;
-    const status = state.running ? "🟢 Running" : state.process ? "🟢 Ready" : "🟡 Idle";
+    const status = state.turnId ? "🟢 Running" : state.process ? "🟢 Ready" : "🟡 Idle";
     header = [`**❋ Claude ${state.model}**`, state.effort && capital(state.effort), state.fast && "Fast", PERMISSIONS[state.permissionMode] ?? state.permissionMode, state.plan && "Plan", status]
       .filter(Boolean).join(" · ");
     if (usage?.totalTokens && state.contextWindow) {
       const percent = Math.round(100 * usage.inputTokens / Number(state.contextWindow));
       rows.push(`| **Context** | ${bar(percent)} ${percent}% · ${tokens(usage.inputTokens)} / ${tokens(Number(state.contextWindow))} |`);
     }
-    session.push(state.running ? "working on a turn" : state.process ? "Claude process running" : state.loaded
+    session.push(state.turnId ? "working on a turn" : state.process ? "Claude process running" : state.loaded
       ? "process unloaded, the next message restarts it" : "not opened since the gateway started");
     if (state.backgroundTasks) session.push(`${state.backgroundTasks} background task${state.backgroundTasks === 1 ? "" : "s"}`);
     cwd = state.cwd;
@@ -151,16 +151,30 @@ async function answer(gateway: Gateway, connection: Connection, threadId: string
   connection.notify("item/completed", { item, threadId, turnId, completedAtMs: Date.now() });
 }
 
+/** The thread's running turn, if any. */
+async function runningTurn(gateway: Gateway, connection: Connection, threadId: string): Promise<string | undefined> {
+  const current = gateway.meta.lineage(threadId)?.at(-1)?.threadId ?? threadId;
+  if (gateway.isClaudeThread(threadId)) return gateway.claude.state(current).turnId ?? undefined;
+  const { data } = await connection.upstream.request("thread/turns/list", { threadId: current, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
+  return data[0]?.status === "inProgress" ? data[0].id : undefined;
+}
+
 /**
  * The status command: an answer that exists only on the wire, never in any transcript or before the model. Sent
- * while a turn runs (a steer), it shows inside that turn and leaves the turn alone; otherwise it is a turn of its own.
+ * while a turn runs (a steer, or queued behind it), it shows at once inside that turn and leaves the turn alone;
+ * otherwise it is a turn of its own.
  */
 export async function statusCommand(gateway: Gateway, connection: Connection, method: string, params: JsonObject): Promise<unknown> {
   const threadId: string = params.threadId;
   const id = `ccodex-${randomUUID()}`;
-  if (method === "turn/steer") {
-    setImmediate(() => void answer(gateway, connection, threadId, params.expectedTurnId, id, params));
-    return { turnId: params.expectedTurnId };
+  const queued = method === "thread/queue/add";
+  const running = method === "turn/steer" ? params.expectedTurnId : queued ? await runningTurn(gateway, connection, threadId) : undefined;
+  // Nothing is queued: Desktop drops the message from its queue on the next `thread/queue/list`.
+  const reply = queued ? { queuedSubmission: { id, input: params.input, clientUserMessageId: params.clientUserMessageId ?? null } } : undefined;
+  if (queued) setImmediate(() => connection.notify("thread/queue/changed", { threadId }));
+  if (running) {
+    setImmediate(() => void answer(gateway, connection, threadId, running, id, params));
+    return reply ?? { turnId: running };
   }
   const now = Math.floor(Date.now() / 1000);
   const turn: Turn = { id, items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: now, completedAt: null, durationMs: null };
@@ -172,5 +186,5 @@ export async function statusCommand(gateway: Gateway, connection: Connection, me
     // Desktop keeps the thread spinning in the sidebar until the thread is idle again.
     connection.notify("thread/status/changed", { threadId, status: { type: "idle" } });
   })());
-  return { turn: startedTurn(turn) };
+  return reply ?? { turn: startedTurn(turn) };
 }
