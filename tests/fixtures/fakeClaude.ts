@@ -65,7 +65,7 @@ class Transcript {
   public last: string | null = null;
   public readonly path: string;
 
-  public constructor(private readonly sessionId: string, private readonly cwd: string, path?: string) {
+  public constructor(private readonly sessionId: string, public cwd: string, path?: string) {
     const directory = join(process.env.CLAUDE_CONFIG_DIR!, "projects", cwd.replace(/[^a-zA-Z0-9]/gu, "-"));
     mkdirSync(directory, { recursive: true });
     this.path = path ?? join(directory, `${sessionId}.jsonl`);
@@ -156,6 +156,9 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     yield* finish("");
     return;
   }
+  // Like a `cd` Claude's Bash runs: the session's later records carry the new cwd.
+  const cd = /^cd (\S+)$/u.exec(text);
+  if (cd) transcript.cwd = cd[1]!;
   const command = /^\/(\w+)\s*([\s\S]*)$/u.exec(text);
   if (command?.[1] === "compact" && (!transcript.humanSinceCompaction() || fakeClaude.compactError)) {
     const output = fakeClaude.compactError ?? "Not enough messages to compact.";

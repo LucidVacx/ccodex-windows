@@ -28,6 +28,8 @@ export interface NativeGoal {
 
 export interface TranscriptSummaryState extends TranscriptHeader {
   readonly hasCreatedAt: boolean;
+  /** `cwd` is the session's own (its first record's), as a stock thread's: a `cd` Claude runs moves its later records'. */
+  readonly hasCwd: boolean;
   /**
    * A thread is a session with a prompt, as stock lists only threads with a user message: not a session that only ran
    * a local command, nor a deleted one whose metadata (title, cost) Claude rewrote after closing it.
@@ -100,6 +102,7 @@ const EMPTY_STATE: TranscriptSummaryState = {
   cliVersion: null,
   goal: null,
   hasCreatedAt: false,
+  hasCwd: false,
   hasFirstPrompt: false,
   sentMessages: [],
   receivedMessages: [],
@@ -134,7 +137,10 @@ export class TranscriptSummarizer {
     if (timestamp !== null) this.state.updatedAt = timestamp;
 
     if (isChainRecord(record)) {
-      if (record.cwd !== undefined) this.state.cwd = record.cwd;
+      if (record.cwd !== undefined && !this.state.hasCwd) {
+        this.state.cwd = record.cwd;
+        this.state.hasCwd = true;
+      }
       if (record.gitBranch !== undefined) this.state.gitBranch = record.gitBranch;
       if (record.version !== undefined) this.state.cliVersion = record.version;
     }

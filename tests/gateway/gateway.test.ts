@@ -1123,6 +1123,15 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(turn.items.map((item: any) => item.id)).toContain(data[2].itemId);
   });
 
+  it("renames a Claude chat after Claude changed directory (its cwd stays the session's own, as a stock thread's)", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "one");
+    await client.turn(threadId, "cd /work/sub");
+    await client.request("thread/name/set", { threadId, name: "Named" });
+    const { thread } = await client.request("thread/read", { threadId });
+    expect([thread.name, thread.cwd]).toEqual(["Named", "/work"]);
+  });
+
   it("keeps a Claude thread's name through an edit of its only message", async () => {
     const threadId = await claudeThread();
     const { turn } = await client.turn(threadId, "one");
