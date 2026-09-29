@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -168,12 +169,29 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     await runDaemonCommand(config, { command: "stop", remoteControl: false }, fixture);
   }, 20_000);
 
-  it("keeps the running gateway for every Desktop launch, as stock keeps its daemon (Browser Use follows a launch without a restart)", async () => {
-    const { config } = harness();
-    const run = () => runDaemonCommand(config, { command: "start", remoteControl: false }, fixture);
-    const first = wire(await run());
-    expect(wire(await run())).toMatchObject({ status: "alreadyRunning" });
-    expect(alive(first.pid as number)).toBe(true);
+  it("replaces a gateway a terminal or a closed Desktop launch started once a Desktop frontend starts it, not an open launch's", async () => {
+    const { config, home } = harness();
+    const run = (desktop?: string) => runDaemonCommand(config, { command: "start", remoteControl: false, desktop }, fixture);
+    const pidFile = join(home, "app-server-daemon", "app-server.pid");
+    const [a, b] = [join(dirname(home), "a.sock"), join(dirname(home), "b.sock")];
+    const appA = createServer();
+    await new Promise<void>((resolve) => appA.listen(a, () => resolve()));
+    const terminal = wire(await run());
+    expect(JSON.parse(readFileSync(pidFile, "utf8")).desktop).toBeUndefined();
+    const desktop = wire(await run(a));
+    expect(desktop.status).toBe("started");
+    expect(alive(terminal.pid as number)).toBe(false);
+    expect(JSON.parse(readFileSync(pidFile, "utf8"))).toMatchObject({ pid: desktop.pid, desktop: a });
+    // Its other frontends, a terminal and another launch while it stays open keep it.
+    expect(wire(await run(a)).status).toBe("alreadyRunning");
+    expect(wire(await run()).status).toBe("alreadyRunning");
+    expect(wire(await run(b)).status).toBe("alreadyRunning");
+    // Once it closes (its pipe file may stay), the next launch replaces it.
+    await new Promise<void>((resolve) => appA.close(() => resolve()));
+    writeFileSync(a, "");
+    const next = wire(await run(b));
+    expect(next.status).toBe("started");
+    expect(alive(desktop.pid as number)).toBe(false);
     await runDaemonCommand(config, { command: "stop", remoteControl: false }, fixture);
   }, 20_000);
 

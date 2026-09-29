@@ -197,8 +197,10 @@ Claude chats follow the App's own controls:
 - The App's built-in `/status` differs by client (Desktop may show only its OpenAI account);
   `/cc` shows the same in every client.
 - A gateway restart (`codex app-server daemon restart`, an update) stops running chats; the
-  App reconnects and reopens its chats, as with a stock app-server restart. Relaunching the
-  App restarts nothing: Browser Use follows the newest App launch.
+  App reconnects and reopens its chats, as with a stock app-server restart.
+- On a Mac, the App's browser works only for processes the running App launched, so the App
+  replaces a gateway started from a terminal (or by an earlier, now closed App launch) with
+  its own; chats running in the old one stop.
 
 ## How it works
 

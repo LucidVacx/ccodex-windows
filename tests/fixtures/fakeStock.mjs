@@ -215,7 +215,6 @@ const handlers = {
   },
   "config/read": () => ({ config: { ...config }, origins: {} }),
   "test/config": () => ({ config: { ...config } }),
-  "test/appTools": () => ({ path: process.env.CODEX_APP_TOOLS_PIPE_PATH }),
   // Test hooks.
   "test/threads": () => ({ threads: [...threads.values()].map((thread) => ({ ...thread, subscribers: thread.subscribers.size })) }),
   "test/approval": async (connection) => ({ decision: await connection.ask("item/commandExecution/requestApproval", { threadId: "stock-thread", command: "ls" }) }),

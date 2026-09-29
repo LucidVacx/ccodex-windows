@@ -4,7 +4,6 @@ import type { Readable, Writable } from "node:stream";
 import WebSocket from "ws";
 import type { Config } from "../config.js";
 import { runDaemonCommand } from "../daemon/daemon.js";
-import { APP_TOOLS_PIPE_HEADER } from "../gateway/stock.js";
 import { applyLaunchConfig } from "./launchConfig.js";
 
 const INITIAL_CONNECT_DEADLINE_MS = 20_000;
@@ -23,17 +22,14 @@ export interface StdioFrontendDeps {
   readonly initialConnectDeadlineMs?: number;
   readonly retryDelayMs?: number;
   readonly configOverrides?: readonly string[];
-  /** The Codex App launch's app tools pipe (Browser Use); the gateway points its stock at it. */
-  readonly appToolsPipe?: string;
 }
 
-function openSocket(socketPath: string, appToolsPipe: string | undefined): Promise<WebSocket> {
+function openSocket(socketPath: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket("ws://ccodex/rpc", {
       createConnection: () => createConnection(socketPath),
       perMessageDeflate: false,
       maxPayload: 64 * 1024 * 1024,
-      ...(appToolsPipe ? { headers: { [APP_TOOLS_PIPE_HEADER]: appToolsPipe } } : {}),
     });
     const onOpen = () => {
       socket.off("error", onError);
@@ -57,7 +53,7 @@ function send(socket: WebSocket, line: string): Promise<void> {
 
 async function defaultKick(config: Config): Promise<void> {
   try {
-    await runDaemonCommand(config, { command: "start", remoteControl: false }, process.argv[1] ?? process.execPath);
+    await runDaemonCommand(config, { command: "start", remoteControl: false, desktop: process.env.CODEX_APP_TOOLS_PIPE_PATH }, process.argv[1] ?? process.execPath);
   } catch (error) {
     process.stderr.write(`ccodex stdio frontend: gateway autostart failed: ${String(error)}\n`);
   }
@@ -87,7 +83,6 @@ class StdioFrontend {
     private readonly initialConnectDeadlineMs: number,
     private readonly retryDelayMs: number,
     private readonly configOverrides: readonly string[],
-    private readonly appToolsPipe: string | undefined,
   ) {
     this.reader = createInterface({ input });
     this.output = output as Writable;
@@ -125,7 +120,7 @@ class StdioFrontend {
     const deadline = Date.now() + this.initialConnectDeadlineMs;
     while (!this.inputEnded && !this.outputFailed && Date.now() < deadline) {
       try {
-        return await openSocket(this.socketPath, this.appToolsPipe);
+        return await openSocket(this.socketPath);
       } catch {
         await sleep(this.retryDelayMs);
       }
@@ -224,6 +219,5 @@ export function runStdioFrontend(
     deps.initialConnectDeadlineMs ?? INITIAL_CONNECT_DEADLINE_MS,
     deps.retryDelayMs ?? RETRY_DELAY_MS,
     deps.configOverrides ?? [],
-    deps.appToolsPipe ?? process.env.CODEX_APP_TOOLS_PIPE_PATH,
   ).run();
 }

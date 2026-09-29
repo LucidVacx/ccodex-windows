@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { realpathSync } from "node:fs";
+import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
 import type { Config } from "../config.js";
 import type { DaemonCommand } from "../cli/args.js";
@@ -34,6 +35,10 @@ const POLL_MS = 50;
 interface DaemonInvocation {
   readonly command: DaemonCommand;
   readonly remoteControl: boolean;
+  /** The Desktop launch a frontend serves (its app tools pipe). Desktop lets only processes under the running app
+   *  use its browser, so a daemon started otherwise is replaced by one the frontend starts, with its environment,
+   *  unless the launch that started it is still open (it keeps its browser, and two open launches take no turns). */
+  readonly desktop?: string;
 }
 
 interface DaemonPaths {
@@ -78,6 +83,15 @@ async function probeMaybe(socketPath: string): Promise<ProbeInfo | undefined> {
   }
 }
 
+/** Whether a Desktop launch is still open: its app tools pipe accepts. */
+function listening(pipe: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(pipe);
+    socket.once("connect", () => { socket.destroy(); resolve(true); });
+    socket.once("error", () => resolve(false));
+  });
+}
+
 /** Polls the socket until the app server answers; gives up at once when the process just spawned for it died. */
 async function waitUntilReady(socketPath: string, pid?: number): Promise<ProbeInfo> {
   const deadline = Date.now() + START_TIMEOUT_MS;
@@ -96,6 +110,7 @@ async function waitUntilReady(socketPath: string, pid?: number): Promise<ProbeIn
 class HybridDaemon {
   private readonly paths: DaemonPaths;
   private version?: Promise<string>;
+  private desktop?: string;
 
   public constructor(private readonly config: Config, wrapperPath: string) {
     this.paths = paths(config, wrapperPath);
@@ -107,6 +122,7 @@ class HybridDaemon {
 
   public run(invocation: DaemonInvocation): Promise<JsonOutput> {
     if (invocation.command === "version") return this.versionOutput();
+    this.desktop = invocation.desktop;
     return withDaemonLock(this.paths.stateDirectory, async () => {
       switch (invocation.command) {
         case "bootstrap": return this.bootstrap(invocation.remoteControl);
@@ -161,6 +177,7 @@ class HybridDaemon {
       pidFile: this.paths.pidFile,
       stderrLog: this.paths.stderrLog,
       remoteControlEnabled: settings.remoteControlEnabled,
+      desktop: this.desktop,
     });
     const record = reconcileManagedProcess(this.paths.pidFile);
     if (!record || record.pid !== pid) throw new Error(`managed app server ${pid} lost daemon ownership during startup`);
@@ -233,7 +250,8 @@ class HybridDaemon {
     const info = await probeMaybe(this.paths.socketPath);
     const managed = reconcileManagedProcess(this.paths.pidFile);
     const managedOwnsSocket = managed ? this.ownsSocket(managed) : false;
-    const current = managed?.wrapperPath === this.paths.wrapperPath;
+    const current = managed?.wrapperPath === this.paths.wrapperPath
+      && (!this.desktop || managed.desktop === this.desktop || (!!managed.desktop && await listening(managed.desktop)));
     if (info && managed && managedOwnsSocket && current) {
       return this.lifecycleOutput("alreadyRunning", "pid", undefined, info.appServerVersion);
     }

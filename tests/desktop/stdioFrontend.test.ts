@@ -31,30 +31,22 @@ function socketPath(): string {
   return join(root, "gw.sock");
 }
 
-async function startFakeGateway(
-  path: string,
-  respond = true,
-  initializeError = false,
-): Promise<{ received: string[]; headers: Record<string, unknown>[]; close: () => Promise<void> }> {
+async function startFakeGateway(path: string): Promise<{ received: string[]; close: () => Promise<void> }> {
   if (existsSync(path)) rmSync(path, { force: true });
   const received: string[] = [];
-  const headers: Record<string, unknown>[] = [];
   const sockets = new WebSocketServer({ noServer: true });
   const server = createServer();
   webSockets.push(sockets);
   servers.push(server);
   server.on("upgrade", (request, socket, head) => {
-    headers.push(request.headers);
     sockets.handleUpgrade(request, socket, head, (client) => {
       client.on("message", (bytes) => {
         const line = bytes.toString();
         received.push(line);
         const message = JSON.parse(line) as { id?: string | number; method?: string };
         if (message.method === "initialize") {
-          client.send(JSON.stringify(initializeError
-            ? { id: message.id, error: { code: -32600, message: "incompatible client" } }
-            : { id: message.id, result: {} }));
-        } else if (respond && message.id !== undefined) {
+          client.send(JSON.stringify({ id: message.id, result: {} }));
+        } else if (message.id !== undefined) {
           client.send(JSON.stringify({ id: message.id, result: { echoed: message.method } }));
         }
       });
@@ -63,7 +55,6 @@ async function startFakeGateway(
   await new Promise<void>((resolve) => server.listen(path, () => resolve()));
   return {
     received,
-    headers,
     close: async () => {
       for (const client of sockets.clients) client.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
@@ -206,11 +197,9 @@ describe("desktop stdio frontend", () => {
     const { output, text } = collector();
     const done = runStdioFrontend(config, path, {
       input, output, kick: async () => { kicks += 1; }, initialConnectDeadlineMs: 5_000, retryDelayMs: 20,
-      appToolsPipe: "/tmp/codex-browser-use/launch.sock",
     });
     input.write('{"id":1,"method":"initialize"}\n');
     await waitFor(() => text().includes('{"id":1,"result":{}}\n'));
-    expect(gateway.headers[0]!["x-ccodex-app-tools-pipe"]).toBe("/tmp/codex-browser-use/launch.sock");
     await gateway.close();
     expect(await done).toBe(1);
     expect(kicks).toBe(1);
