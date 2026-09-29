@@ -10,6 +10,10 @@ Return only the title.
 """
 # title_model = "gpt-6-luna"        # default: the first visible luna/mini Codex model
 
+# Adds instructions/ccodex_extra_common_instructions.md (formulas and plots the App renders) to what Codex and
+# Claude models get in the App.
+improve_models_formatting_for_codex_app = true
+
 # codex_binary = "/path/to/codex"   # default: the first `codex` on PATH that is not CCodex
 # delegate_codex = "/path/to/codex" # what plain `codex …` (TUI, exec, login) runs; default: codex_binary
 # claude_binary = "/path/to/claude" # default: the Claude Code bundled with the Agent SDK

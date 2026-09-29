@@ -22,6 +22,8 @@ export interface Config {
   readonly titleModel?: string;
   /** What a plain `codex …` (TUI, exec, login) runs; defaults to the installed codex. */
   readonly delegateCodex: string;
+  /** Our formulas and plots instructions for Codex and Claude models in the app. */
+  readonly improveModelsFormatting: boolean;
 }
 
 export const DEFAULT_RENAME_PROMPT = `Create a concise, vivid, memorable title for the task.
@@ -144,5 +146,6 @@ export function loadConfig(): Config {
     ...(renamePrompt ? { renamePrompt } : {}),
     ...(file.title_model ? { titleModel: file.title_model as string } : {}),
     delegateCodex: expandHome(process.env.CCODEX_DELEGATE_CODEX ?? file.delegate_codex ?? codex),
+    improveModelsFormatting: file.improve_models_formatting_for_codex_app ?? true,
   };
 }

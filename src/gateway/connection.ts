@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
+import { withFormatting } from "../instructions.js";
 import type { Provider } from "../meta.js";
 import { rpcError, type JsonObject, type RequestId } from "../protocol/codex.js";
 import type { Gateway } from "./server.js";
@@ -10,6 +11,9 @@ const THREAD_CONTEXT_METHODS = new Set([
   "app/installed", "app/list", "app/read", "experimentalFeature/list", "feedback/upload", "mcpServerStatus/list",
   "mcpServer/tool/call", "mcpServer/resource/read", "mcpServer/oauth/login", "mcpServer/event/stream/start",
 ]);
+
+/** Requests that carry the client's developer instructions (Desktop's app context). */
+const INSTRUCTED_METHODS = new Set(["thread/start", "thread/resume", "thread/fork"]);
 
 type Handler = (connection: Connection, params: any) => Promise<unknown>;
 
@@ -24,6 +28,8 @@ export class Connection {
   public provider: Provider = "codex";
   /** Ephemeral threads this client is creating: only their creator hears of them (stock tells every client). */
   public readonly ephemeralRequests = new Set<RequestId>();
+  /** The developer instructions this client last sent; the stock threads the gateway starts or resumes for it get them too. */
+  public developerInstructions?: string;
   private closed = false;
   /** What the client sent past its handshake before the gateway was ready, in order. */
   private backlog?: string[] = [];
@@ -94,6 +100,13 @@ export class Connection {
     } catch {
       this.forward(text);
       return;
+    }
+    if (INSTRUCTED_METHODS.has(message.method) && message.params?.developerInstructions) {
+      if (this.gateway.config.improveModelsFormatting) {
+        message.params.developerInstructions = withFormatting(message.params.developerInstructions);
+        text = JSON.stringify(message);
+      }
+      this.developerInstructions = message.params.developerInstructions;
     }
     if ((message.method === "thread/start" || message.method === "thread/fork") && message.params?.ephemeral === true) {
       this.ephemeralRequests.add(message.id);

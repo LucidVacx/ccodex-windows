@@ -24,7 +24,7 @@ function newThread(params, extra = {}) {
     modelProvider: "openai", model: params.model ?? "gpt-6-luna", reasoningEffort: null, createdAt: at, updatedAt: at,
     recencyAt: at, status: { type: "idle" }, path: null, cwd: params.cwd ?? "/work", cliVersion: "0.156.0", source: "vscode",
     threadSource: "user", agentNickname: null, agentRole: null, gitInfo: null, name: null, turns: [], archived: false,
-    injected: [], approvalPolicy: "on-request", sandbox: { type: "workspaceWrite" }, ...extra,
+    injected: [], instructions: [], approvalPolicy: "on-request", sandbox: { type: "workspaceWrite" }, ...extra,
   };
   thread.sessionId = thread.id;
   thread.path = `/sessions/rollout-${thread.id}.jsonl`;
@@ -105,6 +105,7 @@ const handlers = {
   "thread/start": (connection, params) => {
     const thread = newThread(params);
     thread.subscribers = new Set([connection]);
+    thread.instructions.push(params.developerInstructions ?? null);
     broadcast("thread/started", { thread: summary(thread) });
     return { thread: summary(thread), ...settings(thread) };
   },
@@ -113,6 +114,7 @@ const handlers = {
     if (!thread) throw Object.assign(new Error(`no rollout found for thread id ${params.threadId}`), { code: -32600 });
     if (params.path && params.path !== thread.path) throw new Error(`cannot resume running thread ${thread.id} with stale path`);
     thread.subscribers.add(connection);
+    thread.instructions.push(params.developerInstructions ?? null);
     return {
       thread: params.excludeTurns ? summary(thread) : full(thread), ...settings(thread), initialTurnsPage: null,
       itemsBackwardsCursor: thread.turns.length ? cursorOf(thread.id, 0) : null,

@@ -6,6 +6,7 @@ import {
   query, startup, type CanUseTool, type Options, type PermissionMode, type PermissionResult, type Query, type SDKMessage,
   type SDKUserMessage, type WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
+import { claudeInstructions } from "../instructions.js";
 import type { JsonObject, QueuedSubmissionLike, ThreadItem, TokenUsageBreakdown, Turn, UserInput } from "../protocol/codex.js";
 import { invalidRequest } from "../protocol/codex.js";
 import { startedTurn } from "../protocol/turnPagination.js";
@@ -324,6 +325,8 @@ export class ClaudeSession {
       ...(effort ? { effort: effort as never } : {}),
       ...(settings.fast ? { settings: { fastMode: true } } : {}),
       permissionMode: claudeMode(settings),
+      // Recorded on the chat's first request and reused until compaction, as Claude Code keeps its system prompt.
+      systemPrompt: { type: "preset", preset: "claude_code", append: claudeInstructions(this.host.config.improveModelsFormatting) },
       // Claude enters plan mode only as the user sets it (stock's collaboration mode).
       disallowedTools: ["EnterPlanMode"],
       // Claude 5 omits its thinking by default: summarized, it shows as the turn's reasoning summary like stock's.

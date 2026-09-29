@@ -3,12 +3,11 @@ import { execFileSync } from "node:child_process";
 const files = execFileSync("git", ["ls-files"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
 const allowedMarkdown = new Set([
   "README.md",
-  "claude/chat-formatting.md",
   "legal/LICENSES.md",
   "legal/THIRD_PARTY_NOTICES.md",
 ]);
 const forbiddenCapture = /(^|\/)(captures?|fixtures\/protocol)(\/|$)|\.(?:capture|gateway|lab)\.json$|\.jsonl(?:\.gz)?$/u;
-const allowedMarkdownPattern = /^(?:agents|skills)\/.+\.md$/u;
+const allowedMarkdownPattern = /^(?:agents|skills|instructions)\/.+\.md$/u;
 // Scrubbed native Claude transcripts (structure kept, free text replaced) used by tests/claude/native.
 const allowedFixtures = /^tests\/fixtures\/nativeClaudeHome\//u;
 const violations = files.filter((path) =>

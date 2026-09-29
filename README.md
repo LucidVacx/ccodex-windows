@@ -134,9 +134,6 @@ codex app-server daemon restart
   (Claude deletes transcripts older than 30 days by default, and with them your Claude
   chats), and installs the `codex-wrapper` agent, the `workforce` skill and the `codex` MCP
   server (user scope).
-- In a terminal, offers to append the Formulas and Plots sections of
-  [`claude/chat-formatting.md`](claude/chat-formatting.md) to `~/.claude/CLAUDE.md`, so
-  Claude writes LaTeX and plots the way the App renders them.
 - Never restarts a running gateway: a new version takes over after
   `codex app-server daemon restart`.
 
@@ -178,6 +175,12 @@ Claude chats follow the App's own controls:
 
 - `rename_prompt` — the title prompt; remove it for stock Codex titles (manual names
   always win). `title_model` — the model that writes them.
+- `improve_models_formatting_for_codex_app` (default `true`) — adds
+  [`instructions/ccodex_extra_common_instructions.md`](instructions/ccodex_extra_common_instructions.md)
+  (formulas and plots the App renders) to the App's instructions for Codex models and to
+  Claude's; Claude also gets
+  [`instructions/ccodex_extra_claude_instructions.md`](instructions/ccodex_extra_claude_instructions.md)
+  (what the App shows beyond a terminal).
 - `log_level` — `debug`, `info` (default), `warn`, `error`.
 - `codex_binary`, `delegate_codex`, `claude_binary` — use a specific `codex` or `claude`.
 

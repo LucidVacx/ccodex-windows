@@ -251,7 +251,7 @@ export class Lineages {
     }
     connection.provider = "codex";
     if (!NO_RESUME.has(method) && !this.resumed.get(connection)?.has(segment.threadId)) {
-      await connection.upstream.request("thread/resume", { threadId: segment.threadId, excludeTurns: true });
+      await connection.upstream.request("thread/resume", { threadId: segment.threadId, excludeTurns: true, developerInstructions: connection.developerInstructions });
     }
     this.track(connection, method, segment.threadId);
     return connection.upstream.request(method, backendParams);
@@ -584,7 +584,9 @@ export class Lineages {
     }
     // codex → claude: stock compaction is encrypted, so an ephemeral fork writes a summary with the same model.
     // The chat's own permissions carry over: Desktop sends none in plan mode, stock's resume tells them.
-    const stock: JsonObject = await connection.upstream.request("thread/resume", { threadId: source.threadId, excludeTurns: true });
+    const stock: JsonObject = await connection.upstream.request("thread/resume", {
+      threadId: source.threadId, excludeTurns: true, developerInstructions: connection.developerInstructions,
+    });
     const permissions = permissionSettings({ approvalPolicy: stock.approvalPolicy, approvalsReviewer: stock.approvalsReviewer, sandboxPolicy: stock.sandbox }, { permissionMode: "default", plan: false });
     const found: JsonObject = await connection.upstream.request("thread/goal/get", { threadId: source.threadId });
     const goal = found.goal?.status === "complete" ? null : found.goal;
@@ -643,7 +645,7 @@ export class Lineages {
     const settings = this.gateway.claude.settings(source.threadId);
     const permissions = codexPermissions(settings.permissionMode, settings.cwd);
     const started = await this.startBackend(connection, {
-      model: requestedModel(params), cwd: settings.cwd,
+      model: requestedModel(params), cwd: settings.cwd, developerInstructions: connection.developerInstructions,
       approvalPolicy: params.approvalPolicy ?? permissions.approvalPolicy,
       approvalsReviewer: params.approvalsReviewer ?? permissions.approvalsReviewer,
       ...(params.permissions || params.sandboxPolicy ? {} : { permissions: permissions.activePermissionProfile.id }),
@@ -658,7 +660,7 @@ export class Lineages {
     await this.gateway.claude.retire(source.threadId);
     // The other clients' stock connections load the backend before its first turn, so stock streams it to them too.
     for (const viewer of viewers) {
-      if (viewer !== connection) await viewer.upstream.request("thread/resume", { threadId, excludeTurns: true }).catch(() => undefined);
+      if (viewer !== connection) await viewer.upstream.request("thread/resume", { threadId, excludeTurns: true, developerInstructions: viewer.developerInstructions }).catch(() => undefined);
       this.track(viewer, "thread/resume", threadId);
     }
     // Stock reports a thread's settings only when they change: the backend started with the model switched to.

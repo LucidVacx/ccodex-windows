@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -160,50 +160,6 @@ function keepClaudeTranscripts(): void {
   process.stdout.write(`Set cleanupPeriodDays: 36500 in ${path}: Claude deletes older transcripts, and with them CCodex's Claude chats.\n`);
 }
 
-/** The `# ` sections of `sections` whose heading `claudeMd` lacks (at any heading level). */
-export function missingSections(claudeMd: string, sections: string): string[] {
-  const headings = new Set(claudeMd.split("\n").filter((line) => line.startsWith("#")).map((line) => line.replace(/^#+/u, "").trim()));
-  return sections.split(/^(?=# )/mu).filter((section) => !headings.has(section.split("\n")[0]!.slice(2).trim()));
-}
-
-/** A yes/no question on the terminal, also under `curl … | sh`; undefined without a terminal. */
-function confirm(question: string): boolean | undefined {
-  if (!process.stdout.isTTY) return undefined;
-  let tty: number;
-  try {
-    tty = openSync("/dev/tty", "r+");
-  } catch {
-    return undefined;
-  }
-  writeSync(tty, question);
-  const buffer = Buffer.alloc(256);
-  const answer = buffer.toString("utf8", 0, readSync(tty, buffer)).trim();
-  closeSync(tty);
-  return !/^n/iu.test(answer);
-}
-
-/** Claude in the Codex app follows the global CLAUDE.md: offer the sections that make its formulas and plots render there. */
-function offerChatFormatting(packageRoot: string): void {
-  const path = join(claudeHome(), "CLAUDE.md");
-  const sections = join(packageRoot, "claude", "chat-formatting.md");
-  const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const missing = missingSections(existing, readFileSync(sections, "utf8"));
-  if (missing.length === 0) return;
-  const names = missing.map((section) => `"${section.split("\n")[0]!.slice(2)}"`).join(" and ");
-  const answer = confirm(`\nClaude in the Codex app follows ${path}. CCodex suggests adding ${names} from ${sections}:\n`
-    + "the app renders formulas only as \\(...\\) / \\[...\\] ($...$ stays raw text) and shows a plot inline only as ![name](/abs/path.png).\n"
-    + `Without them, formulas and plots in Claude chats look subpar. Append to ${path}? [Y/n] `);
-  if (answer === undefined) {
-    process.stdout.write(`Tip: for formulas and plots that render in Claude chats, add ${names} from ${sections} to ${path} (or run ccodex setup in a terminal).\n`);
-    return;
-  }
-  if (!answer) return;
-  mkdirSync(dirname(path), { recursive: true });
-  // Appending keeps the file's mode and a symlinked CLAUDE.md (dotfiles) intact.
-  appendFileSync(path, `${existing === "" ? "" : existing.endsWith("\n") ? "\n" : "\n\n"}${missing.join("")}`);
-  process.stdout.write(`Added ${names} to ${path}.\n`);
-}
-
 export async function setup(args: readonly string[]): Promise<number> {
   if (process.getuid?.() === 0) throw new Error("Do not run CCodex setup as root or with sudo.");
   const versionIndex = args.indexOf("--version");
@@ -285,7 +241,6 @@ export async function setup(args: readonly string[]): Promise<number> {
   const packageRoot = join(target, "node_modules", PACKAGE);
   await installClaudeStack(packageRoot);
   // Read from the activated version: 0.4 hands over to this setup from ~/.ccodex/staging, removed above.
-  offerChatFormatting(packageRoot);
   process.stdout.write(`CCodex ${version} activated. Restart the gateway: codex app-server daemon restart\n`
     + `Open a new shell or run: export PATH="${paths.bin}:$PATH"\n`);
   return 0;

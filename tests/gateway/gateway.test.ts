@@ -769,6 +769,33 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(history.thread.turns).toHaveLength(turns);
   });
 
+  it("adds our formatting to Desktop's app context for stock, also for the stock thread a switch starts, and gives Claude its own", async () => {
+    const desktop = "<app-context>\n# Codex desktop context\n</app-context>\n\n### Projectless Chat";
+    const formatted = /^<app-context>\n# Codex desktop context\n\n### Formulas\n[\s\S]*### Plots\n[\s\S]*\n<\/app-context>\n\n### Projectless Chat$/u;
+    const instructions = async () => Object.fromEntries((await client.request("test/threads")).threads.map((thread: any) => [thread.id, thread.instructions]));
+    const { thread: gpt } = await client.request("thread/start", { model: "gpt-6-luna", cwd: "/work", developerInstructions: desktop });
+    const { thread: claude } = await client.request("thread/start", { model: CLAUDE, cwd: "/work", developerInstructions: desktop });
+    await client.turn(claude.id, "start");
+    expect(fakeClaude.options.at(-1)!.systemPrompt).toEqual({ type: "preset", preset: "claude_code", append: expect.stringMatching(/^# Desktop app\n[\s\S]*\n\n### Formulas\n[\s\S]*### Plots\n/u) });
+    await client.turn(claude.id, "go", { model: "gpt-6-luna" });
+    const viewer = await gateway.connect();
+    await viewer.request("thread/resume", { threadId: claude.id, developerInstructions: desktop });
+    await viewer.turn(claude.id, "again");
+    const all = await instructions();
+    expect(all[gpt.id]).toEqual([expect.stringMatching(formatted)]);
+    // The stock backend reads as the chat's own id: started by the switch, resumed for the other client.
+    expect(all[claude.id]).toEqual([expect.stringMatching(formatted), expect.stringMatching(formatted)]);
+
+    await gateway.stop();
+    gateway = await startTestGateway({ improveModelsFormatting: false });
+    client = await gateway.connect();
+    const { thread: plain } = await client.request("thread/start", { model: "gpt-6-luna", cwd: "/work", developerInstructions: desktop });
+    expect((await instructions())[plain.id]).toEqual([desktop]);
+    await client.turn(await claudeThread(), "start");
+    expect(fakeClaude.options.at(-1)!.systemPrompt.append).toMatch(/^# Desktop app\n/u);
+    expect(fakeClaude.options.at(-1)!.systemPrompt.append).not.toContain("### Formulas");
+  });
+
   it("carries a chat's goal to the model it switches to, active or paused, and stops the Claude session it leaves", async () => {
     const threadId = await claudeThread();
     await client.turn(threadId, "start");
