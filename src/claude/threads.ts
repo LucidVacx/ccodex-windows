@@ -764,7 +764,9 @@ export class ClaudeThreads {
 
   private cachedModels(): ClaudeModel[] | undefined {
     try {
-      return JSON.parse(readFileSync(this.modelsPath, "utf8")) as ClaudeModel[];
+      const cache = JSON.parse(readFileSync(this.modelsPath, "utf8")) as { version: string; models: ClaudeModel[] };
+      // As stock's models cache: one another version wrote (another Claude, another model list) is stale.
+      return cache.version === packageVersion() ? cache.models : undefined;
     } catch {
       return undefined;
     }
@@ -782,7 +784,7 @@ export class ClaudeThreads {
       return models;
     });
     const temporary = `${this.modelsPath}.${process.pid}.tmp`;
-    void writeFile(temporary, JSON.stringify(models), { mode: 0o600 }).then(() => rename(temporary, this.modelsPath)).catch(() => undefined);
+    void writeFile(temporary, JSON.stringify({ version: packageVersion(), models }), { mode: 0o600 }).then(() => rename(temporary, this.modelsPath)).catch(() => undefined);
     return this.useModels(models);
   }
 

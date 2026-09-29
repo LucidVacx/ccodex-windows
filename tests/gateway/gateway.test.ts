@@ -1241,6 +1241,19 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(models.data.map((model: any) => model.id)).toContain(CLAUDE);
   });
 
+  it("asks Claude again after an update: the list another version reported is stale (a new model)", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "ccodex-state-"));
+    const stale = [{ value: "stale-model", resolvedModel: "claude-stale-1", displayName: "Stale 1", description: "" }];
+    writeFileSync(join(dataDir, "claude-models.json"), JSON.stringify({ version: "0.0.1", models: stale }));
+    await gateway.stop();
+    fakeClaude.modelsHold = new Promise((resolve) => setTimeout(resolve, 300));
+    gateway = await startTestGateway({ dataDir });
+    client = await gateway.connect();
+    const models = await client.request("model/list", {});
+    expect(models.data.map((model: any) => model.id)).toContain(CLAUDE);
+    expect(models.data.map((model: any) => model.id)).not.toContain("claude:stale-model");
+  });
+
   it("clears the run directories of gateways killed without stopping", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ccodex-state-"));
     const dead = join(dataDir, "run", String(spawnSync("true").pid));
