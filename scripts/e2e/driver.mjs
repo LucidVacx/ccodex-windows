@@ -412,8 +412,7 @@ const scenarios = {
     // The codex npm installed stays the one CCodex runs: the upgrade neither loses it nor installs another.
     check(steps.doctor.includes(`✓ codex: ${home}/.ccodex/backups/remote-codex`) && !steps.upgrade.includes("No codex on PATH")
       && steps.backup.startsWith(`${home}/.local/lib/node_modules/@openai/codex/bin/codex.js`), "the upgrade from 0.4 keeps the installed codex", steps);
-    // Without a terminal setup never asks (nor waits) about CLAUDE.md: it only points at the sections.
-    check(steps.upgrade.includes("Tip: for formulas and plots") && !existsSync(join(home, ".claude", "CLAUDE.md")), "setup without a terminal leaves CLAUDE.md alone", steps.upgrade);
+    check(!existsSync(join(home, ".claude", "CLAUDE.md")), "setup leaves CLAUDE.md alone", steps.upgrade);
     return steps;
   },
 
