@@ -2,6 +2,7 @@
 // Minimal scripted `codex app-server --listen unix://…`: in-memory threads, the notifications stock sends, and a
 // few test hooks. Enough to exercise CCodex's gateway as a black box.
 import { randomUUID } from "node:crypto";
+import { renameSync } from "node:fs";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 
@@ -214,6 +215,7 @@ const handlers = {
   },
   "config/read": () => ({ config: { ...config }, origins: {} }),
   "test/config": () => ({ config: { ...config } }),
+  "test/appTools": () => ({ path: process.env.CODEX_APP_TOOLS_PIPE_PATH }),
   // Test hooks.
   "test/threads": () => ({ threads: [...threads.values()].map((thread) => ({ ...thread, subscribers: thread.subscribers.size })) }),
   "test/approval": async (connection) => ({ decision: await connection.ask("item/commandExecution/requestApproval", { threadId: "stock-thread", command: "ls" }) }),
@@ -256,5 +258,6 @@ sockets.on("connection", (socket) => {
     }
   });
 });
-server.listen(socketPath);
+// As stock: the socket appears only once it accepts (a gateway polling for the file connects at once).
+server.listen(`${socketPath}.binding`, () => renameSync(`${socketPath}.binding`, socketPath));
 process.on("SIGTERM", () => process.exit(0));

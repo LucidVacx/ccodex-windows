@@ -14,7 +14,7 @@ import { Lineages } from "./lineage.js";
 import { RemoteControl } from "./remote.js";
 import { acquireSocketStartupLock, prepareUnixSocket } from "./socket.js";
 import { isStatusCommand, isStatusTurn, statusCommand, statusSkill } from "./status.js";
-import { StockClient, openStockSocket, startStockProcess, type StockProcess } from "./stock.js";
+import { APP_TOOLS_PIPE_HEADER, StockClient, openStockSocket, startStockProcess, type StockProcess } from "./stock.js";
 import { Titles } from "./titles.js";
 
 type Handler = (connection: Connection, params: any) => Promise<unknown>;
@@ -89,6 +89,7 @@ export class Gateway {
   }
 
   public connectionSocket(): string { return this.stockProcess.socketPath; }
+  public pointAppTools(pipe: string): void { this.stockProcess.pointAppTools(pipe); }
 
   public async stop(): Promise<void> {
     await this.remote.stop();
@@ -395,6 +396,8 @@ export async function startGateway(
         socket.destroy();
         return;
       }
+      const appTools = request.headers[APP_TOOLS_PIPE_HEADER];
+      if (typeof appTools === "string") gateway.pointAppTools(appTools);
       webSockets.handleUpgrade(request, socket, head, (client) => {
         const upstream = new StockClient(openStockSocket(gateway.connectionSocket()));
         gateway.connections.add(new Connection(gateway, client, upstream));

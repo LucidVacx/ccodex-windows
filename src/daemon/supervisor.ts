@@ -31,8 +31,6 @@ export interface PidRecord {
   /** Stock's native identity of a Linux daemon: it checks this before the start time (locale-free). */
   readonly processIdentity?: { readonly bootId: string; readonly startTicks: number };
   readonly wrapperPath?: string;
-  /** The Desktop launch whose frontend started the daemon (see `DaemonInvocation.desktop`). */
-  readonly desktop?: string;
 }
 
 interface LockOwner extends PidRecord {
@@ -210,7 +208,6 @@ export async function publishDaemonChildRecord(): Promise<() => void> {
     processStartTime: startTime,
     ...(process.platform === "linux" ? { processIdentity: linuxIdentity(process.pid) } : {}),
     ...(reservation.wrapperPath ? { wrapperPath: reservation.wrapperPath } : {}),
-    ...(reservation.desktop ? { desktop: reservation.desktop } : {}),
   };
   atomicWrite(pidFile, record);
   delete process.env[CHILD_PID_FILE];
@@ -223,14 +220,12 @@ export async function spawnDetachedGateway(options: {
   readonly pidFile: string;
   readonly stderrLog: string;
   readonly remoteControlEnabled: boolean;
-  readonly desktop?: string;
 }): Promise<number> {
   const token = randomUUID();
   const reservation = {
     pid: 0,
     processStartTime: `starting:${token}`,
     wrapperPath: options.wrapperPath,
-    ...(options.desktop ? { desktop: options.desktop } : {}),
   };
   atomicWrite(options.pidFile, reservation);
   mkdirSync(dirname(options.stderrLog), { recursive: true, mode: 0o700 });
@@ -333,7 +328,9 @@ function recoverLock(lockDirectory: string): void {
   }
   try {
     const owner = readLockOwner(`${lockDirectory}/owner.json`);
-    const age = existsSync(lockDirectory) ? Date.now() - statSync(lockDirectory).mtimeMs : 0;
+    // The owner may release it meanwhile: gone is free.
+    const modified = statSync(lockDirectory, { throwIfNoEntry: false })?.mtimeMs;
+    const age = modified === undefined ? 0 : Date.now() - modified;
     if ((!owner && age >= START_TIMEOUT_MS) || (owner && !processMatches(owner))) {
       rmSync(lockDirectory, { recursive: true, force: true });
     }

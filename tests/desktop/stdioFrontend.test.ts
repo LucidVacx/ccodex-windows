@@ -35,14 +35,16 @@ async function startFakeGateway(
   path: string,
   respond = true,
   initializeError = false,
-): Promise<{ received: string[]; close: () => Promise<void> }> {
+): Promise<{ received: string[]; headers: Record<string, unknown>[]; close: () => Promise<void> }> {
   if (existsSync(path)) rmSync(path, { force: true });
   const received: string[] = [];
+  const headers: Record<string, unknown>[] = [];
   const sockets = new WebSocketServer({ noServer: true });
   const server = createServer();
   webSockets.push(sockets);
   servers.push(server);
   server.on("upgrade", (request, socket, head) => {
+    headers.push(request.headers);
     sockets.handleUpgrade(request, socket, head, (client) => {
       client.on("message", (bytes) => {
         const line = bytes.toString();
@@ -61,6 +63,7 @@ async function startFakeGateway(
   await new Promise<void>((resolve) => server.listen(path, () => resolve()));
   return {
     received,
+    headers,
     close: async () => {
       for (const client of sockets.clients) client.terminate();
       await new Promise<void>((resolve) => sockets.close(() => resolve()));
@@ -195,43 +198,22 @@ describe("desktop stdio frontend", () => {
     expect(await done).toBe(0);
   });
 
-  it("reconnects, replays only initialize, and fails an in-flight request explicitly", async () => {
+  it("ends when the gateway goes, as stock's app-server proxy: the App starts it again and resumes its chats", async () => {
     const path = socketPath();
-    const first = await startFakeGateway(path, false);
-    let second: Awaited<ReturnType<typeof startFakeGateway>> | undefined;
+    const gateway = await startFakeGateway(path);
     let kicks = 0;
     const input = new PassThrough();
     const { output, text } = collector();
     const done = runStdioFrontend(config, path, {
-      input,
-      output,
-      kick: async () => {
-        kicks += 1;
-        if (kicks > 1) second ??= await startFakeGateway(path);
-      },
-      initialConnectDeadlineMs: 5_000,
-      retryDelayMs: 20,
+      input, output, kick: async () => { kicks += 1; }, initialConnectDeadlineMs: 5_000, retryDelayMs: 20,
+      appToolsPipe: "/tmp/codex-browser-use/launch.sock",
     });
-
     input.write('{"id":1,"method":"initialize"}\n');
     await waitFor(() => text().includes('{"id":1,"result":{}}\n'));
-    input.write('{"id":7,"method":"turn/start"}\n');
-    await waitFor(() => first.received.some((line) => JSON.parse(line).id === 7));
-    await first.close();
-
-    await waitFor(() => text().includes('"code":-32001'));
-    await waitFor(() => Boolean(second?.received.length));
-    expect(second!.received.map((line) => JSON.parse(line))).toEqual([
-      { id: 1, method: "initialize" },
-    ]);
-    expect(kicks).toBe(2);
-    expect(text().match(/"id":1,"result":\{\}/g)).toHaveLength(1);
-
-    input.write('{"id":8,"method":"thread/list"}\n');
-    await waitFor(() => text().includes('{"id":8,"result":{"echoed":"thread/list"}}\n'));
-    expect(second!.received.some((line) => JSON.parse(line).id === 8)).toBe(true);
-    input.end();
-    expect(await done).toBe(0);
+    expect(gateway.headers[0]!["x-ccodex-app-tools-pipe"]).toBe("/tmp/codex-browser-use/launch.sock");
+    await gateway.close();
+    expect(await done).toBe(1);
+    expect(kicks).toBe(1);
   });
 
   it("exits non-zero after the initial deadline when the gateway never starts", async () => {
@@ -248,17 +230,4 @@ describe("desktop stdio frontend", () => {
     expect(code).toBe(1);
   });
 
-  it("forwards an initialize rejection once and exits instead of reconnecting forever", async () => {
-    const path = socketPath();
-    const gateway = await startFakeGateway(path, true, true);
-    const input = new PassThrough();
-    const { output, text } = collector();
-    const done = runStdioFrontend(config, path, {
-      input, output, kick: async () => undefined, initialConnectDeadlineMs: 5_000, retryDelayMs: 20,
-    });
-    input.write('{"id":1,"method":"initialize"}\n');
-    expect(await done).toBe(1);
-    expect(text().match(/incompatible client/g)).toHaveLength(1);
-    expect(gateway.received).toHaveLength(1);
-  });
 });

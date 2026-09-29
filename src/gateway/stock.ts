@@ -5,10 +5,16 @@ import { join } from "node:path";
 import WebSocket from "ws";
 import type { Config } from "../config.js";
 import type { Logger } from "../log.js";
+import { atomicSymlink } from "../management/files.js";
 import { RpcFailure, type JsonObject } from "../protocol/codex.js";
+
+/** A Codex App frontend's app tools pipe (Browser Use), sent with its gateway connection. */
+export const APP_TOOLS_PIPE_HEADER = "x-ccodex-app-tools-pipe";
 
 export interface StockProcess {
   readonly socketPath: string;
+  /** Points stock's app tools pipe at a Codex App launch's (an existing one). */
+  pointAppTools(pipe: string): void;
   stop(): Promise<void>;
 }
 
@@ -42,10 +48,13 @@ export async function startStockProcess(config: Config, args: readonly string[],
   }
   const runDir = join(runRoot, String(process.pid));
   const socketPath = join(runDir, "stock.sock");
+  // Each App launch has its own app tools pipe, and stock's environment is fixed at its start: stock gets a link
+  // that follows the launch that connected last.
+  const appTools = join(runDir, "app-tools.sock");
   mkdirSync(runDir, { recursive: true, mode: 0o700 });
   rmSync(socketPath, { force: true });
   const child: ChildProcess = spawn(config.codex, [...args, "--listen", `unix://${socketPath}`], {
-    env: { ...process.env, CODEX_CLI_PATH: undefined, CCODEX_SHIM_ACTIVE: undefined, CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" },
+    env: { ...process.env, CODEX_CLI_PATH: undefined, CCODEX_SHIM_ACTIVE: undefined, CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1", CODEX_APP_TOOLS_PIPE_PATH: appTools },
     stdio: ["ignore", "ignore", "pipe"],
   });
   let stopping = false;
@@ -74,6 +83,9 @@ export async function startStockProcess(config: Config, args: readonly string[],
   logger.info("stock.started", { pid: child.pid, socketPath, codex: config.codex });
   return {
     socketPath,
+    pointAppTools(pipe) {
+      if (existsSync(pipe)) atomicSymlink(pipe, appTools);
+    },
     async stop() {
       stopping = true;
       if (child.exitCode === null) {

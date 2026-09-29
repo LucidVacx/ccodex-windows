@@ -34,9 +34,6 @@ const POLL_MS = 50;
 interface DaemonInvocation {
   readonly command: DaemonCommand;
   readonly remoteControl: boolean;
-  /** The Desktop launch a frontend serves (its app tools pipe). Desktop lets only processes under the running app
-   *  use its browser, so a daemon started otherwise is replaced by one the frontend starts, with its environment. */
-  readonly desktop?: string;
 }
 
 interface DaemonPaths {
@@ -99,7 +96,6 @@ async function waitUntilReady(socketPath: string, pid?: number): Promise<ProbeIn
 class HybridDaemon {
   private readonly paths: DaemonPaths;
   private version?: Promise<string>;
-  private desktop?: string;
 
   public constructor(private readonly config: Config, wrapperPath: string) {
     this.paths = paths(config, wrapperPath);
@@ -111,7 +107,6 @@ class HybridDaemon {
 
   public run(invocation: DaemonInvocation): Promise<JsonOutput> {
     if (invocation.command === "version") return this.versionOutput();
-    this.desktop = invocation.desktop;
     return withDaemonLock(this.paths.stateDirectory, async () => {
       switch (invocation.command) {
         case "bootstrap": return this.bootstrap(invocation.remoteControl);
@@ -166,7 +161,6 @@ class HybridDaemon {
       pidFile: this.paths.pidFile,
       stderrLog: this.paths.stderrLog,
       remoteControlEnabled: settings.remoteControlEnabled,
-      desktop: this.desktop,
     });
     const record = reconcileManagedProcess(this.paths.pidFile);
     if (!record || record.pid !== pid) throw new Error(`managed app server ${pid} lost daemon ownership during startup`);
@@ -239,7 +233,7 @@ class HybridDaemon {
     const info = await probeMaybe(this.paths.socketPath);
     const managed = reconcileManagedProcess(this.paths.pidFile);
     const managedOwnsSocket = managed ? this.ownsSocket(managed) : false;
-    const current = managed?.wrapperPath === this.paths.wrapperPath && (!this.desktop || managed.desktop === this.desktop);
+    const current = managed?.wrapperPath === this.paths.wrapperPath;
     if (info && managed && managedOwnsSocket && current) {
       return this.lifecycleOutput("alreadyRunning", "pid", undefined, info.appServerVersion);
     }

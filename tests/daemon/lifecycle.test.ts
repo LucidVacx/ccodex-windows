@@ -168,21 +168,12 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     await runDaemonCommand(config, { command: "stop", remoteControl: false }, fixture);
   }, 20_000);
 
-  it("replaces a gateway another Desktop launch or a terminal started once a Desktop frontend starts it", async () => {
-    const { config, home } = harness();
-    const run = (desktop?: string) => runDaemonCommand(config, { command: "start", remoteControl: false, desktop }, fixture);
-    const pidFile = join(home, "app-server-daemon", "app-server.pid");
-    const terminal = wire(await run());
-    expect(JSON.parse(readFileSync(pidFile, "utf8")).desktop).toBeUndefined();
-    const desktop = wire(await run("/tmp/codex-browser-use/a.sock"));
-    expect(desktop.status).toBe("started");
-    expect(alive(terminal.pid as number)).toBe(false);
-    expect(JSON.parse(readFileSync(pidFile, "utf8"))).toMatchObject({ pid: desktop.pid, desktop: "/tmp/codex-browser-use/a.sock" });
-    // Its other frontends and a terminal keep it; the next launch replaces it.
-    expect(wire(await run("/tmp/codex-browser-use/a.sock")).status).toBe("alreadyRunning");
-    expect(wire(await run()).status).toBe("alreadyRunning");
-    const next = wire(await run("/tmp/codex-browser-use/b.sock"));
-    expect(next.pid).not.toBe(desktop.pid);
+  it("keeps the running gateway for every Desktop launch, as stock keeps its daemon (Browser Use follows a launch without a restart)", async () => {
+    const { config } = harness();
+    const run = () => runDaemonCommand(config, { command: "start", remoteControl: false }, fixture);
+    const first = wire(await run());
+    expect(wire(await run())).toMatchObject({ status: "alreadyRunning" });
+    expect(alive(first.pid as number)).toBe(true);
     await runDaemonCommand(config, { command: "stop", remoteControl: false }, fixture);
   }, 20_000);
 

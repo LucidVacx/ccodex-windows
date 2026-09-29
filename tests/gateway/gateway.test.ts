@@ -1,8 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { fakeClaude, fakeQuery, fakeStartup } from "../fixtures/fakeClaude.js";
 import { startTestGateway, type Client, type TestGateway } from "./harness.js";
 
@@ -767,6 +769,25 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
       .filter((item: any) => item.type === "agentMessage").map((item: any) => item.text);
     expect(said.filter((text: string) => /Goal (?:set|cleared)|No goal/u.test(text))).toEqual([]);
     expect(history.thread.turns).toHaveLength(turns);
+  });
+
+  it("points stock's app tools pipe at the Codex App launch that connected last, with no restart (Browser Use)", async () => {
+    const { path: link } = await client.request("test/appTools");
+    const launch = (pipe: string) => new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket("ws://ccodex/rpc", { createConnection: () => createConnection(gateway.config.publicSocket), headers: { "x-ccodex-app-tools-pipe": pipe } });
+      socket.once("open", () => { socket.close(); resolve(); });
+      socket.once("error", reject);
+    });
+    const [first, second] = [join(gateway.root, "launch-1.sock"), join(gateway.root, "launch-2.sock")];
+    writeFileSync(first, "");
+    writeFileSync(second, "");
+    await launch(first);
+    expect(readlinkSync(link)).toBe(first);
+    await launch(second);
+    expect(readlinkSync(link)).toBe(second);
+    // A launch whose pipe is gone (a quit App's leftover frontend) moves nothing.
+    await launch(join(gateway.root, "gone.sock"));
+    expect(readlinkSync(link)).toBe(second);
   });
 
   it("adds our formatting to Desktop's app context for stock, also for the stock thread a switch starts, and gives Claude its own", async () => {
