@@ -53,4 +53,28 @@ describe("native Claude sub-agent projection", () => {
       await rm(sessionDirectory, { recursive: true });
     }
   });
+
+  it("shows its coordinator's message in the running turn as the message alone, like stock's to a running sub-agent", async () => {
+    const sessionDirectory = await mkdtemp(join(tmpdir(), "ccodex-native-subagents-"));
+    const directory = join(sessionDirectory, "subagents");
+    await mkdir(directory);
+    const [prompt, answer] = transcript("worker");
+    const envelope = { sessionId: "root", agentId: "worker", isSidechain: true, cwd: "/workspace" };
+    const records = [
+      prompt,
+      { ...answer, uuid: "call", message: { id: "call-message", role: "assistant", model: "claude-sonnet-5", content: [{ type: "tool_use", id: "toolu-1", name: "Bash", input: { command: "true" } }], stop_reason: "tool_use" } },
+      { type: "user", uuid: "result", parentUuid: "call", timestamp: "2026-09-18T00:00:02.000Z", ...envelope, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu-1", content: "" }] } },
+      { type: "attachment", uuid: "queued", parentUuid: "result", timestamp: "2026-09-18T00:00:03.000Z", ...envelope, attachment: { type: "queued_command", prompt: "Check the tests too", source_uuid: "sent", origin: { kind: "coordinator" }, isMeta: true } },
+      { ...answer, parentUuid: "queued", timestamp: "2026-09-18T00:00:04.000Z" },
+    ];
+    await writeFile(join(directory, "agent-worker.meta.json"), `${JSON.stringify({ agentType: "Explore", description: "Inspect code", toolUseId: "tool-worker", spawnDepth: 1 })}\n`);
+    await writeFile(join(directory, "agent-worker.jsonl"), `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+    try {
+      const { projection } = (await projectSubagents(sessionDirectory, "root-thread"))[0]!;
+      expect(projection.turns.map((turn) => turn.items.map((item) => item.type))).toEqual([["userMessage", "commandExecution", "userMessage", "agentMessage"]]);
+      expect(projection.turns[0]!.items[2]).toMatchObject({ id: "sent", content: [{ type: "text", text: "Check the tests too" }] });
+    } finally {
+      await rm(sessionDirectory, { recursive: true });
+    }
+  });
 });

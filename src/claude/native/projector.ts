@@ -171,9 +171,13 @@ function imageInput(source: unknown): UserInput | undefined {
   return url ? { type: "image", url } : undefined;
 }
 
+/** What Claude tells a sub-agent its coordinator (the session above it) sent once the sub-agent's work had ended. */
+const COORDINATOR_MESSAGE = /^The coordinator sent a message while you were working:\n([\s\S]*?)(?:\n\nAddress this before completing your current task\.)?$/u;
+
 function userInputs(record: UserRecord): UserInput[] {
   if (typeof record.message.content === "string") {
-    const text = slashCommand(record.message.content) ?? record.message.content;
+    // Like stock's message to a sub-agent (`send_input`), the sub-agent's thread shows just the message.
+    const text = record.origin?.kind === "coordinator" ? record.message.content.replace(COORDINATOR_MESSAGE, "$1") : slashCommand(record.message.content) ?? record.message.content;
     return [{ type: "text", text, text_elements: [] }];
   }
   return record.message.content.flatMap((block): UserInput[] => {
@@ -521,7 +525,8 @@ interface TurnStart {
  * A message another agent sent starts a turn when Claude took it as a prompt of its own (a new `promptId`). Claude
  * also goes on by itself after an answer, in a turn of its own named after that answer (live turns split the same
  * way): with a finished task's notification it took after its result (a new `promptId`), or with more work after a
- * message of an answer's length. A sub-agent's transcript is one turn.
+ * message of an answer's length. A sub-agent's transcript is one turn, and one more for each message its coordinator
+ * sent once its work had ended (like stock's to an idle sub-agent).
  */
 function turnStarts(records: readonly TranscriptChainRecord[], subagentPromptUuid: string | undefined, steered: ReadonlySet<string>): TurnStart[] {
   const starts: TurnStart[] = [];
@@ -546,7 +551,7 @@ function turnStarts(records: readonly TranscriptChainRecord[], subagentPromptUui
     if (steered.has(record.uuid)) return;
     const prompt = peerOrigin(record.origin)
       ? record.promptId === undefined || record.promptId !== previous
-      : startsTurn(record, subagentPromptUuid);
+      : record.origin?.kind === "coordinator" || startsTurn(record, subagentPromptUuid);
     if (prompt) {
       starts.push({ index, id: record.uuid, prompt: record });
       lastBlock = undefined;
@@ -619,7 +624,8 @@ function projectTurns(
         const peer = peerOrigin(attachment?.origin);
         if (attachment?.type === "queued_command" && peer) {
           items.push(peerMessageItem(string(attachment.source_uuid) ?? record.uuid, peer, string(attachment.prompt) ?? "", peers));
-        } else if (attachment?.type === "queued_command" && attachment.commandMode === "prompt" && (typeof attachment.prompt === "string" || Array.isArray(attachment.prompt))) {
+        } else if (attachment?.type === "queued_command" && (attachment.commandMode === "prompt" || object(attachment.origin)?.kind === "coordinator")
+          && (typeof attachment.prompt === "string" || Array.isArray(attachment.prompt))) {
           const id = string(attachment.source_uuid) ?? record.uuid;
           items.push({ type: "userMessage", id, clientId: id, content: userInputs({ message: { content: attachment.prompt } } as UserRecord) });
         }

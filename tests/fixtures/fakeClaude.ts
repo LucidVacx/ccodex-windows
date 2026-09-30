@@ -417,12 +417,31 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     const child = new Transcript(sessionId, options.cwd ?? process.cwd(), join(directory, `agent-${agentId}.jsonl`));
     child.write({ type: "user", isSidechain: true, agentId, message: { role: "user", content: "Reply SUB-OK" } });
     // Claude writes the sub-agent's last records a moment after its task settles.
-    setTimeout(() => child.write({ type: "assistant", isSidechain: true, agentId, apiBlockIndex: 0, message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "SUB-OK" }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 1 } } }), 300);
+    setTimeout(() => child.write({ type: "assistant", isSidechain: true, agentId, apiBlockIndex: 0, effort: "high", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "SUB-OK" }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 1 } } }), 300);
     yield base(sessionId, { type: "system", subtype: "task_notification", task_id: agentId, tool_use_id: toolUseId, status: "completed", output_file: "", summary: "Echo" });
     const finished = { status: "completed", agentId, agentType: "general-purpose", description: "Echo", resolvedModel: "claude-opus-5-5", prompt: "Reply SUB-OK", content: [{ type: "text", text: "SUB-OK" }] };
     const content = [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text: "SUB-OK" }] }];
     transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: finished });
     yield base(sessionId, { type: "user", message: { role: "user", content }, tool_use_result: finished });
+  }
+  if (text.includes("message the finished sub-agent")) {
+    // The message resumes the foreground sub-agent's work: Claude runs it again as the same task.
+    const toolUseId = `toolu_${randomUUID().slice(0, 8)}`;
+    const agentId = "f0f0f0";
+    const call = { type: "assistant", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "tool_use", id: toolUseId, name: "SendMessage", input: { to: agentId, message: "Now reply AGAIN-OK" } }], stop_reason: "tool_use", usage: { input_tokens: 5, output_tokens: 1 } } };
+    transcript.write({ ...call, apiBlockIndex: 0 });
+    yield base(sessionId, call);
+    const child = new Transcript(sessionId, options.cwd ?? process.cwd(), transcript.path.replace(/\.jsonl$/u, `/subagents/agent-${agentId}.jsonl`));
+    const message = "The coordinator sent a message while you were working:\nNow reply AGAIN-OK\n\nAddress this before completing your current task.";
+    child.write({ type: "user", isSidechain: true, agentId, isMeta: true, origin: { kind: "coordinator" }, promptId: randomUUID(), message: { role: "user", content: message } });
+    yield base(sessionId, { type: "system", subtype: "task_started", task_id: agentId, tool_use_id: toolUseId, task_type: "local_agent", description: "Echo" });
+    const resumed = { success: true, message: `Resuming agent ${agentId}`, resumedAgentId: agentId, pin: { id: agentId, name: agentId, ref: "e70713" } };
+    const content = [{ type: "tool_result", tool_use_id: toolUseId, content: [{ type: "text", text: JSON.stringify(resumed) }] }];
+    transcript.write({ type: "user", message: { role: "user", content }, toolUseResult: resumed });
+    yield base(sessionId, { type: "user", message: { role: "user", content }, tool_use_result: resumed });
+    setTimeout(() => child.write({ type: "assistant", isSidechain: true, agentId, apiBlockIndex: 0, effort: "high", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "claude-opus-5-5", content: [{ type: "text", text: "AGAIN-OK" }], stop_reason: "end_turn", usage: { input_tokens: 5, output_tokens: 1 } } }), 1500);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    yield base(sessionId, { type: "system", subtype: "task_notification", task_id: agentId, tool_use_id: toolUseId, status: "completed", output_file: "", summary: "Echo" });
   }
   const messageId = `msg_${randomUUID().slice(0, 8)}`;
   yield base(sessionId, { type: "stream_event", event: { type: "message_start", message: { id: messageId } } });

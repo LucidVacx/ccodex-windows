@@ -361,6 +361,21 @@ export class ClaudeThreads {
     this.spawnedSubagents.set(childId, thread);
     this.gateway.broadcast("thread/started", { thread });
     if (!running) return void this.subagentFinished(childId);
+    this.watchSubagent(session, childId);
+  }
+
+  /** The coordinator's message resumed a sub-agent whose work had ended: it runs again (Claude's same task). */
+  public async subagentResumed(session: ClaudeSession, childId: string): Promise<void> {
+    const thread = this.spawnedSubagents.get(childId) ?? (await this.subagentProjection(childId))?.thread;
+    if (!thread || this.liveSubagents.has(childId)) return;
+    const status: Thread["status"] = { type: "active", activeFlags: [] };
+    this.spawnedSubagents.set(childId, { ...thread, turns: [], status });
+    this.gateway.emit(childId, "thread/status/changed", { threadId: childId, status });
+    this.watchSubagent(session, childId);
+  }
+
+  /** Shows what a running sub-agent's transcript gets, as it gets it. */
+  private watchSubagent(session: ClaudeSession, childId: string): void {
     const live = { shown: new Map<string, string>(), size: 0, poll: setInterval(() => {
       const summary = this.catalog.get(session.threadId);
       if (!summary) return void this.catalog.refresh();
@@ -1137,9 +1152,9 @@ export class ClaudeThreads {
       const modelContextWindow = this.contextWindow(thread.model?.slice(this.config.modelPrefix.length));
       setImmediate(() => this.gateway.emit(threadId, "thread/tokenUsage/updated", { threadId, turnId: turns.at(-1)?.id ?? null, tokenUsage: { ...usage, modelContextWindow } }));
     }
-    // A sub-agent has no session of its own: it shows the model and directory it runs with.
+    // A sub-agent has no session of its own: it shows the model, effort and directory it runs with.
     const settings = thread.parentThreadId && thread.model
-      ? { ...this.settings(threadId), cwd: thread.cwd, model: this.pickerModel(thread.model.slice(this.config.modelPrefix.length)) }
+      ? { ...this.settings(threadId), cwd: thread.cwd, model: this.pickerModel(thread.model.slice(this.config.modelPrefix.length)), effort: thread.reasoningEffort ?? null }
       : this.settings(threadId);
     if (!thread.parentThreadId && this.catalog.get(threadId)) this.prewarm(this.session(threadId), RESUME_WARM_MS);
     const response: JsonObject = {

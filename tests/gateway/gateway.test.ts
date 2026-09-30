@@ -965,6 +965,27 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await new Promise((resolve) => setTimeout(resolve, 400));
     const { thread } = await client.request("thread/read", { threadId: childId, includeTurns: true });
     expect(itemsOf(thread.turns)).toEqual(["user:Reply SUB-OK", "agent:SUB-OK"]);
+    // Desktop's composer on the sub-agent's page shows the effort it ran with.
+    expect(await client.request("thread/resume", { threadId: childId })).toMatchObject({ reasoningEffort: "high" });
+  });
+
+  it("shows a message to a finished Claude sub-agent in its thread, like stock's to an idle one: the sub-agent runs again in a turn of its own", async () => {
+    const threadId = await claudeThread();
+    await client.turn(threadId, "run a foreground sub-agent");
+    const childId = "agent-f0f0f0";
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await client.request("thread/resume", { threadId: childId });
+    const before = client.messages.length;
+    await client.turn(threadId, "message the finished sub-agent");
+    await client.waitFor("turn/completed", (params) => params.threadId === childId);
+    const live = client.messages.slice(before).filter((message) => message.params?.threadId === childId).map((message) =>
+      message.method === "thread/status/changed" ? `status ${message.params.status.type}`
+      : message.method === "item/completed" ? `item ${itemsOf([{ items: [message.params.item] }])}` : message.method);
+    expect(live.filter((event, index) => event !== live[index - 1])).toEqual([
+      "status active", "turn/started", "item/started", "item user:Now reply AGAIN-OK", "item/started", "item agent:AGAIN-OK", "turn/completed", "status idle",
+    ]);
+    const { thread } = await client.request("thread/read", { threadId: childId, includeTurns: true });
+    expect(thread.turns.map((turn: any) => itemsOf([turn]))).toEqual([["user:Reply SUB-OK", "agent:SUB-OK"], ["user:Now reply AGAIN-OK", "agent:AGAIN-OK"]]);
   });
 
   it("shows what Codex says in a Claude thread's Codex MCP call, live and in history", async () => {

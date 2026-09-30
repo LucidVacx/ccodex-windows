@@ -134,9 +134,9 @@ function siblingBlocks(
 }
 
 /** A message another agent sent: a meta record Claude answers like a prompt, or (while it works) a queued command. */
-/** Another agent's message, or any message Claude folded into a running turn (a steer too). */
+/** Another agent's message (a sub-agent's coordinator's too), or any message Claude folded into a running turn (a steer too). */
 function sentMessage(record: TranscriptChainRecord): boolean {
-  if (record.type === "user") return record.origin?.kind === "peer";
+  if (record.type === "user") return record.origin?.kind === "peer" || record.origin?.kind === "coordinator";
   const attachment = record.type === "attachment" ? record.attachment as { type?: unknown } | undefined : undefined;
   return attachment?.type === "queued_command";
 }

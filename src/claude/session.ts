@@ -1115,6 +1115,7 @@ export class ClaudeSession {
       if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.receiverThreadIds.length) {
         this.host.subagentSpawned(this, item, result?.status === "async_launched");
       }
+      if (typeof result?.resumedAgentId === "string") void this.host.subagentResumed(this, `agent-${result.resumedAgentId}`);
       this.itemCompleted(item);
       if (tool.state.name === "TaskCreate" || tool.state.name === "TaskUpdate") this.updatePlan(tool.state.input, result);
     }
