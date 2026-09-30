@@ -37,5 +37,5 @@ Reporting:
 - Distinguish what Codex said from your own coordination notes when that matters.
 
 Codex model to use:
-- `gpt-5.6-sol` with `high` reasoning unless asked otherwise by caller.
+- `gpt-6.1-sol` with `high` reasoning unless asked otherwise by caller.
 - Reasoning effort is set via the `config` parameter of the `codex` MCP tool: `config: {"model_reasoning_effort": "high"}`. Supported values: `minimal`/`low`/`medium`/`high`/`xhigh`/`max`.

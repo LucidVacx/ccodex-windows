@@ -7,7 +7,7 @@ const allowedMarkdown = new Set([
   "legal/THIRD_PARTY_NOTICES.md",
 ]);
 const forbiddenCapture = /(^|\/)(captures?|fixtures\/protocol)(\/|$)|\.(?:capture|gateway|lab)\.json$|\.jsonl(?:\.gz)?$/u;
-const allowedMarkdownPattern = /^(?:agents|skills|instructions)\/.+\.md$/u;
+const allowedMarkdownPattern = /^(?:agents|instructions)\/.+\.md$/u;
 // Scrubbed native Claude transcripts (structure kept, free text replaced) used by tests/claude/native.
 const allowedFixtures = /^tests\/fixtures\/nativeClaudeHome\//u;
 const violations = files.filter((path) =>

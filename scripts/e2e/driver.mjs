@@ -1,7 +1,7 @@
 // E2E driver (runs inside the container): starts the gateway through the managed `codex` shim, talks to it like
 // Desktop over the control socket, and exercises every feature with real models. Results → /out/results.json.
-import { execFileSync, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -413,6 +413,7 @@ const scenarios = {
     check(steps.doctor.includes(`✓ codex: ${home}/.ccodex/backups/remote-codex`) && !steps.upgrade.includes("No codex on PATH")
       && steps.backup.startsWith(`${home}/.local/lib/node_modules/@openai/codex/bin/codex.js`), "the upgrade from 0.4 keeps the installed codex", steps);
     check(!existsSync(join(home, ".claude", "CLAUDE.md")), "setup leaves CLAUDE.md alone", steps.upgrade);
+    check(steps.upgrade.includes("The workforce skill has become outdated") && existsSync(join(home, ".claude", "skills", "workforce")), "setup leaves 0.4's workforce skill to the user, with a notice", steps.upgrade);
     return steps;
   },
 
@@ -609,9 +610,8 @@ const scenarios = {
   /** What `ccodex setup` installs on a clean machine lets Claude delegate to Codex: codex-wrapper → codex MCP → Codex's messages in the sub-agent's chat. */
   async codexSubagent() {
     const agent = join(HOME, ".claude", "agents", "codex-wrapper.md");
-    const skill = join(HOME, ".claude", "skills", "workforce", "SKILL.md");
     const server = JSON.parse(readFileSync(join(HOME, ".claude.json"), "utf8")).mcpServers?.codex;
-    check(existsSync(agent) && existsSync(skill) && server?.command === "codex" && server.args?.[0] === "mcp-server", "setup installed the Claude stack", { agent: existsSync(agent), skill: existsSync(skill), server });
+    check(existsSync(agent) && server?.command === "codex" && server.args?.[0] === "mcp-server", "setup installed the Claude stack", { agent: existsSync(agent), server });
     const settings = JSON.parse(readFileSync(join(HOME, ".claude", "settings.json"), "utf8"));
     check(settings.cleanupPeriodDays === 36_500, "setup keeps Claude's transcripts", settings);
     const { thread } = await client.request("thread/start", { model: state.haiku, cwd: WORK, approvalPolicy: "never", sandbox: "danger-full-access" });
@@ -735,12 +735,12 @@ const scenarios = {
 
   /** Both providers' skills are listed in every chat (Desktop asks per cwd): a Claude skill mentioned in a GPT chat is Claude's own file. */
   async claudeSkillInGpt() {
-    const skill = join(HOME, ".claude", "skills", "workforce", "SKILL.md");
-    const listed = (await client.request("skills/list", { cwds: [WORK] })).data[0].skills.find((entry) => entry.name === "claude:workforce");
+    const skill = join(HOME, ".claude", "skills", "e2e-probe", "SKILL.md");
+    const listed = (await client.request("skills/list", { cwds: [WORK] })).data[0].skills.find((entry) => entry.name === "claude:e2e-probe");
     check(listed?.path === skill, "Claude skill listed with its file", listed);
     const { thread } = await client.request("thread/start", { model: GPT, cwd: WORK, approvalPolicy: "never", sandbox: "danger-full-access" });
-    const done = await client.turn(thread.id, `[$claude:workforce](${skill}) Open this skill's file and reply with only its first line that starts with "# ".`, { model: GPT });
-    check(done.answers.join(" ").includes("Subagents and token usage"), "GPT read the Claude skill", done.answers);
+    const done = await client.turn(thread.id, `[$claude:e2e-probe](${skill}) Open this skill's file and reply with only its first line that starts with "# ".`, { model: GPT });
+    check(done.answers.join(" ").includes("E2E probe skill"), "GPT read the Claude skill", done.answers);
     return { answers: done.answers };
   },
 
@@ -762,11 +762,11 @@ const scenarios = {
   /** Claude's Skill tool shows as stock shows a skill: a read of the skill's SKILL.md, named after it. */
   async claudeSkillCall() {
     const { thread } = await client.request("thread/start", { model: state.haiku, cwd: WORK, approvalPolicy: "never", sandbox: "danger-full-access" });
-    const done = await client.turn(thread.id, "Use the Skill tool to load the workforce skill, then reply with just SKILL-OK.");
-    const skill = join(HOME, ".claude", "skills", "workforce", "SKILL.md");
+    const done = await client.turn(thread.id, "Use the Skill tool to load the e2e-probe skill, then reply with just SKILL-OK.");
+    const skill = join(HOME, ".claude", "skills", "e2e-probe", "SKILL.md");
     const reads = (await client.request("thread/read", { threadId: thread.id, includeTurns: true })).thread.turns.flatMap((turn) => turn.items)
       .filter((item) => item.type === "commandExecution").flatMap((item) => item.commandActions);
-    check(reads.some((action) => action.type === "read" && action.name === "workforce skill" && action.path === skill), "Skill call shown as a read of its SKILL.md", reads);
+    check(reads.some((action) => action.type === "read" && action.name === "e2e-probe skill" && action.path === skill), "Skill call shown as a read of its SKILL.md", reads);
     return { reads, answers: done.answers };
   },
 
@@ -1072,6 +1072,22 @@ const scenarios = {
     });
     check(!diffs.length, "identical after restart", diffs);
     return { restart: restart.slice(0, 200), threads: ids.length };
+  },
+
+  /** A plain Codex app-server on the public socket (Codex 0.158+ listens under /tmp/codex-daemon-<uid>/ behind a link there): the restart takes over. */
+  async stockDaemonTakeover() {
+    client.close();
+    await daemon("stop");
+    const stock = spawn(join(HOME, ".npm-global", "bin", "codex"), ["app-server", "--listen", `unix://${SOCKET}`], { detached: true, stdio: "ignore" });
+    for (let attempt = 0; !existsSync(SOCKET) && attempt < 100; attempt += 1) await sleep(100);
+    const linked = lstatSync(SOCKET).isSymbolicLink() ? readlinkSync(SOCKET) : "not a link";
+    const restart = await daemon("restart");
+    client = await Client.connect();
+    check(stock.exitCode !== null || stock.signalCode !== null, "the plain Codex app-server stopped", { linked, restart });
+    const { thread } = await client.request("thread/start", { model: GPT, cwd: WORK });
+    const reply = await client.turn(thread.id, "Reply with exactly: TAKEOVER-OK");
+    check(reply.answers.some((answer) => answer.includes("TAKEOVER-OK")), "GPT turn after the takeover", reply.answers);
+    return { linked, restart: restart.slice(0, 120), answers: reply.answers };
   },
 
   /**

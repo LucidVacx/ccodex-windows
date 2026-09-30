@@ -132,8 +132,7 @@ codex app-server daemon restart
   `codex`. The signed `.app` is never touched, so its auto-updates keep working.
 - Claude Code: sets `cleanupPeriodDays: 36500` in `~/.claude/settings.json` when unset
   (Claude deletes transcripts older than 30 days by default, and with them your Claude
-  chats), and installs the `codex-wrapper` agent, the `workforce` skill and the `codex` MCP
-  server (user scope).
+  chats), and installs the `codex-wrapper` agent and the `codex` MCP server (user scope).
 - Never restarts a running gateway: a new version takes over after
   `codex app-server daemon restart`.
 

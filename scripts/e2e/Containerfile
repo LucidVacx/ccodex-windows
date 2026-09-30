@@ -9,6 +9,7 @@ RUN npm install -g "@openai/codex@${CODEX_VERSION}" --no-audit --no-fund && code
 ARG CCODEX_VERSION
 COPY --chown=node:node ccodex.tgz relay.tgz /tmp/
 RUN CCODEX_PACKAGE_SPEC=/tmp/ccodex.tgz CCODEX_RELAY_PACKAGE_SPEC=/tmp/relay.tgz npx --yes --package /tmp/ccodex.tgz ccodex setup --version "${CCODEX_VERSION}" \
- && mkdir -p /home/node/.claude /home/node/.codex /home/node/work \
+ && mkdir -p /home/node/.claude/skills/e2e-probe /home/node/.codex /home/node/work \
+ && printf '%s\n' '---' 'name: e2e-probe' 'description: A probe skill for the CCodex e2e tests.' '---' '' '# E2E probe skill' '' 'Reply with SKILL-OK.' > /home/node/.claude/skills/e2e-probe/SKILL.md \
  && printf '%s\n' 'log_level = "debug"' >> /home/node/.ccodex/config.toml
 WORKDIR /home/node/work

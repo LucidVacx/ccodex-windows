@@ -139,7 +139,7 @@ function installRemoteShim(home: string, bin: string): Manifest["remoteCodexShim
   return { path, target, ...(existsSync(backupPath) ? { backupPath } : {}) };
 }
 
-/** Claude's side of delegation to Codex: the codex-wrapper agent, CCodex's skills (workforce) and the codex MCP server. */
+/** Claude's side of delegation to Codex: the codex-wrapper agent and the codex MCP server. */
 async function installClaudeStack(packageRoot: string): Promise<void> {
   try {
     const env = { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` };

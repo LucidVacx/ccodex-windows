@@ -28,6 +28,5 @@ lab/apple-container/.build/
 !README.md
 !legal/LICENSES.md
 !legal/THIRD_PARTY_NOTICES.md
-!skills/**/*.md
 !agents/*.md
 !instructions/*.md

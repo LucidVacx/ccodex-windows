@@ -32,7 +32,6 @@
     "scripts/uninstall.sh",
     "scripts/install-claude-stack.sh",
     "agents/*.md",
-    "skills/**/*.md",
     "instructions/*.md",
     "examples/config.toml",
     "legal/LICENSES.md",
