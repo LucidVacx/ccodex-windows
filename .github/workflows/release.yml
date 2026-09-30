@@ -164,12 +164,18 @@ jobs:
       - name: Regenerate package-lock against published packages
         run: |
           version=$(node -p 'require("./package.json").version')
-          for attempt in 1 2 3 4 5; do
+          # The registry shows each relay package in its own time: the lock needs all three.
+          locked() {
+            for relay in darwin-arm64 linux-arm64-gnu linux-x64-gnu; do
+              grep -q "ccodex-relay-${relay}-${version}.tgz" package-lock.json || return 1
+            done
+          }
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
             npm install --package-lock-only --ignore-scripts --prefer-online
-            grep -q "ccodex-relay-linux-x64-gnu-${version}.tgz" package-lock.json && break
+            locked && break
             sleep 30
           done
-          grep -q "ccodex-relay-linux-x64-gnu-${version}.tgz" package-lock.json
+          locked
       - name: Commit and push if changed
         run: |
           git diff --quiet package-lock.json && exit 0
