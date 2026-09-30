@@ -7,6 +7,7 @@ import {
   readFileSync,
   readdirSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -85,9 +86,18 @@ function lsofSocketOwners(socketPath: string): number[] {
     .sort((left, right) => left - right);
 }
 
+/** Stock (0.158+) binds its socket under /tmp/codex-daemon-<uid>/ and links the public path to it. */
+function boundPath(socketPath: string): string {
+  try {
+    return realpathSync(socketPath);
+  } catch {
+    return socketPath;
+  }
+}
+
 export function socketOwnerPids(socketPath: string): number[] {
-  if (process.platform === "linux") return linuxSocketOwners(socketPath);
-  if (process.platform === "darwin") return lsofSocketOwners(socketPath);
+  if (process.platform === "linux") return linuxSocketOwners(boundPath(socketPath));
+  if (process.platform === "darwin") return lsofSocketOwners(boundPath(socketPath));
   throw new Error(`Unix socket ownership discovery is unsupported on ${process.platform}`);
 }
 

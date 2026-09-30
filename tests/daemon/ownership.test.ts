@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -42,6 +42,10 @@ describe("gateway socket ownership", () => {
       // A relay/proxy client connected to the same Unix socket is not the
       // listener owner and must never become a takeover signal target.
       expect(socketOwnerPids(socketPath)).toEqual([process.pid]);
+      // Stock (0.158+) listens under /tmp/codex-daemon-<uid>/ behind a link at the public path.
+      const link = join(root, "public.sock");
+      symlinkSync(socketPath, link);
+      expect(socketOwnerPids(link)).toEqual([process.pid]);
       const release = publishGatewayOwner(socketPath);
       expect(reconcileOwnedGateway(socketPath)).toMatchObject({ pid: process.pid });
       release();
