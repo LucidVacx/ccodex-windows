@@ -1,12 +1,18 @@
 name: Build relay packages
 
 on:
+  workflow_call:
   workflow_dispatch:
+  # A tag's release sees caches of main only: built here, the relay binaries are cached for it.
+  push:
+    branches: [main]
   pull_request:
     paths:
       - "relay/**"
       - "packages/relay-*/**"
       - "scripts/build-relay.sh"
+      - "scripts/build-linux-relay.sh"
+      - "release/Dockerfile.relay"
       - "rust-toolchain.toml"
       - ".github/workflows/build-relays.yml"
 
@@ -19,15 +25,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-14
-            target: aarch64-apple-darwin
-            package: relay-darwin-arm64
-          - runner: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            package: relay-linux-arm64-gnu
-          - runner: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            package: relay-linux-x64-gnu
+          - { runner: macos-14, target: aarch64-apple-darwin, package: relay-darwin-arm64 }
+          - { runner: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, package: relay-linux-arm64-gnu }
+          - { runner: ubuntu-22.04, target: x86_64-unknown-linux-gnu, package: relay-linux-x64-gnu }
     runs-on: ${{ matrix.runner }}
     env:
       CARGO_INCREMENTAL: "0"
@@ -38,10 +38,16 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
-      - uses: docker/setup-buildx-action@v3
-        if: runner.os == 'Linux'
+      # The binary carries no package version: while the relay's sources are unchanged, a release reuses it.
       - uses: actions/cache@v4
-        if: runner.os == 'macOS'
+        id: bin
+        with:
+          path: packages/${{ matrix.package }}/bin/ccodex-relay
+          key: relay-bin-${{ matrix.target }}-${{ hashFiles('relay/Cargo.toml', 'relay/Cargo.lock', 'relay/src/**', 'relay/vendor/**', 'release/Dockerfile.relay', 'scripts/build-relay.sh', 'scripts/build-linux-relay.sh') }}
+      - uses: docker/setup-buildx-action@v3
+        if: runner.os == 'Linux' && steps.bin.outputs.cache-hit != 'true'
+      - uses: actions/cache@v4
+        if: runner.os == 'macOS' && steps.bin.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -49,17 +55,14 @@ jobs:
             relay/target/release
             relay/target/${{ matrix.target }}/release
           key: relay-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('relay/Cargo.lock') }}
-      - name: Install Rust target
-        if: runner.os == 'macOS'
+      - if: runner.os == 'macOS' && steps.bin.outputs.cache-hit != 'true'
         run: rustup target add "${{ matrix.target }}"
-      - name: Build macOS relay
-        if: runner.os == 'macOS'
+      - if: runner.os == 'macOS' && steps.bin.outputs.cache-hit != 'true'
         env:
           CCODEX_RELAY_TARGET: ${{ matrix.target }}
           MACOSX_DEPLOYMENT_TARGET: "11.0"
         run: ./scripts/build-relay.sh
-      - name: Build glibc 2.31 Linux relay
-        if: runner.os == 'Linux'
+      - if: runner.os == 'Linux' && steps.bin.outputs.cache-hit != 'true'
         run: ./scripts/build-linux-relay.sh "${{ matrix.target }}" "${{ matrix.package }}"
       - run: node release/verify-packages.mjs --target "${{ matrix.package }}"
       - run: packages/${{ matrix.package }}/bin/ccodex-relay --help
@@ -69,4 +72,3 @@ jobs:
           name: ${{ matrix.package }}
           path: artifacts/*.tgz
           if-no-files-found: error
-          retention-days: 7
