@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // Minimal scripted `codex app-server --listen unix://…`: in-memory threads, the notifications stock sends, and a
 // few test hooks. Enough to exercise CCodex's gateway as a black box.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { renameSync } from "node:fs";
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 
 const listen = process.argv[process.argv.indexOf("--listen") + 1];
-const socketPath = listen.slice("unix://".length);
+// `unix://PATH` (on Windows PATH may be a named pipe) or, as stock also takes, `ws://IP:PORT`.
+const tcp = listen.startsWith("ws://") ? new URL(listen) : null;
+const socketPath = tcp ? null : listen.slice("unix://".length);
 const threads = new Map();
 const connections = new Set();
 /** Stock's server-owned order of the Pinned section. */
@@ -221,7 +223,14 @@ const handlers = {
 };
 
 const server = createServer();
-const sockets = new WebSocketServer({ server });
+// `--ws-auth capability-token --ws-token-sha256 HEX`: only a client sending the token as a bearer gets in.
+const option = (name) => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : undefined;
+const tokenSha256 = option("--ws-auth") === "capability-token" ? option("--ws-token-sha256") : undefined;
+const sockets = new WebSocketServer({
+  server,
+  verifyClient: ({ req }) => tokenSha256 === undefined
+    || createHash("sha256").update(/^Bearer (.+)$/u.exec(req.headers.authorization ?? "")?.[1] ?? "").digest("hex") === tokenSha256,
+});
 sockets.on("connection", (socket) => {
   let nextAsk = 0;
   const asks = new Map();
@@ -257,6 +266,13 @@ sockets.on("connection", (socket) => {
     }
   });
 });
+// As stock: the bound address in a banner on stderr (port 0 picks one).
+if (tcp) server.listen(Number(tcp.port), tcp.hostname.replace(/^\[|\]$/gu, ""), () => {
+  const url = `ws://${tcp.hostname}:${server.address().port}`;
+  process.stderr.write(`codex app-server (WebSockets)\n  listening on: ${url}\n  readyz: ${url.replace("ws:", "http:")}/readyz\n`);
+});
+// A named pipe exists only while it accepts.
+else if (/^[\\/]{2}[.?][\\/]pipe[\\/]/iu.test(socketPath)) server.listen(socketPath);
 // As stock: the socket appears only once it accepts (a gateway polling for the file connects at once).
-server.listen(`${socketPath}.binding`, () => renameSync(`${socketPath}.binding`, socketPath));
+else server.listen(`${socketPath}.binding`, () => renameSync(`${socketPath}.binding`, socketPath));
 process.on("SIGTERM", () => process.exit(0));

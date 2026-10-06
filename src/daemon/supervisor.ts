@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { isProcessAlive, isWindows, killProcessTreeSync, windowsProcessStartTime } from "../platform/process.js";
 
 const CHILD_PID_FILE = "CODEX_HYBRID_DAEMON_PID_FILE";
 const CHILD_TOKEN = "CODEX_HYBRID_DAEMON_TOKEN";
@@ -53,15 +54,10 @@ function hasDaemonChildHandshake(): boolean {
   return true;
 }
 
-export function processExists(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+export const processExists = isProcessAlive;
+
+/** Ours never changes, and Windows pays a PowerShell call for each lookup. */
+let ownStartTime: string | undefined;
 
 function linuxStartTicks(pid: number): string | undefined {
   try {
@@ -74,6 +70,10 @@ function linuxStartTicks(pid: number): string | undefined {
 
 export function processStartTime(pid: number): string | undefined {
   if (!processExists(pid)) return undefined;
+  if (isWindows) {
+    if (pid === process.pid) return ownStartTime ??= windowsProcessStartTime(pid);
+    return windowsProcessStartTime(pid);
+  }
   if (process.platform === "linux") {
     const ticks = linuxStartTicks(pid);
     return ticks && `linux:${ticks}`;
@@ -148,6 +148,8 @@ function linuxGroupHasLiveMember(processGroup: number): boolean | undefined {
 }
 
 function groupExists(processGroup: number): boolean {
+  // Windows has no process groups: `taskkill /T` ends the tree with its root.
+  if (isWindows) return processExists(processGroup);
   const liveLinuxMember = linuxGroupHasLiveMember(processGroup);
   if (liveLinuxMember !== undefined) return liveLinuxMember;
   try {
@@ -158,7 +160,12 @@ function groupExists(processGroup: number): boolean {
   }
 }
 
+/** Windows has neither groups nor SIGTERM: any signal ends the live tree at once (a gone root has no tree to find). */
 function signalGroup(processGroup: number, signal: NodeJS.Signals): void {
+  if (isWindows) {
+    if (processExists(processGroup)) killProcessTreeSync(processGroup);
+    return;
+  }
   try {
     process.kill(-processGroup, signal);
   } catch (error) {
@@ -247,7 +254,7 @@ export async function spawnDetachedGateway(options: {
   let child;
   let spawnError: Error | undefined;
   try {
-    child = spawn(process.execPath, args, { detached: true, env, stdio: ["ignore", "ignore", stderr] });
+    child = spawn(process.execPath, args, { detached: true, env, stdio: ["ignore", "ignore", stderr], windowsHide: true });
   } catch (error) {
     closeSync(stderr);
     removeRecord(options.pidFile, reservation);
@@ -286,7 +293,8 @@ export async function stopManagedProcess(pidFile: string, expected?: PidRecord):
       return;
     }
     if (!forced && Date.now() - startedAt >= STOP_GRACE_MS) {
-      signalGroup(record.pid, "SIGKILL");
+      // Windows' first signal already forced the tree down; a pid still alive may be a reused one (pgid fences POSIX).
+      if (!isWindows || processMatches(record)) signalGroup(record.pid, "SIGKILL");
       forced = true;
     }
     await sleep(POLL_MS);
@@ -332,7 +340,7 @@ function recoverLock(lockDirectory: string): void {
     return;
   }
   try {
-    const owner = readLockOwner(`${lockDirectory}/owner.json`);
+    const owner = readLockOwner(join(lockDirectory, "owner.json"));
     // The owner may release it meanwhile: gone is free.
     const modified = statSync(lockDirectory, { throwIfNoEntry: false })?.mtimeMs;
     const age = modified === undefined ? 0 : Date.now() - modified;
@@ -347,7 +355,7 @@ function recoverLock(lockDirectory: string): void {
 export async function withDaemonLock<T>(stateDirectory: string, operation: () => Promise<T>): Promise<T> {
   mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
   chmodSync(stateDirectory, 0o700);
-  const lockFile = `${stateDirectory}/daemon.lock`;
+  const lockFile = join(stateDirectory, "daemon.lock");
   const descriptor = openSync(lockFile, "a", 0o600);
   closeSync(descriptor);
   chmodSync(lockFile, 0o600);
@@ -359,7 +367,7 @@ export async function withDaemonLock<T>(stateDirectory: string, operation: () =>
   while (true) {
     try {
       mkdirSync(lockDirectory, { mode: 0o700 });
-      atomicWrite(`${lockDirectory}/owner.json`, owner);
+      atomicWrite(join(lockDirectory, "owner.json"), owner);
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
@@ -371,7 +379,7 @@ export async function withDaemonLock<T>(stateDirectory: string, operation: () =>
   try {
     return await operation();
   } finally {
-    const current = readLockOwner(`${lockDirectory}/owner.json`);
+    const current = readLockOwner(join(lockDirectory, "owner.json"));
     if (current?.token === owner.token) rmSync(lockDirectory, { recursive: true, force: true });
   }
 }

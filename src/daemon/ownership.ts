@@ -13,6 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { endpointFile, isNamedPipe } from "../config.js";
+import { isWindows, killProcessTreeSync, windowsPipeExists, windowsPipeServerPid } from "../platform/process.js";
 import { processMatches, processStartTime, type PidRecord } from "./supervisor.js";
 
 const POLL_MS = 50;
@@ -31,12 +33,26 @@ export interface SocketOwnershipRuntime {
   readonly signal: (pid: number, signal: NodeJS.Signals) => void;
   readonly now: () => number;
   readonly sleep: (milliseconds: number) => Promise<void>;
+  /** Cheap check that an endpoint has no server any more (Windows pipes, whose owner lookup is slow); optional. */
+  readonly endpointGone?: (socketPath: string) => boolean;
 }
 
 const sleep = (milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
 export function gatewayOwnerFile(socketPath: string): string {
-  return `${socketPath}.ccodex-owner.json`;
+  return endpointFile(socketPath, ".ccodex-owner.json");
+}
+
+/**
+ * Windows: the pipe's server as the OS names it. Only one process can serve a pipe name (Node creates its first
+ * instance exclusively) and the pipe goes with its server, so this is the one owner, as `lsof` finds a socket's.
+ */
+function pipeOwners(pipePath: string): number[] {
+  if (!windowsPipeExists(pipePath)) return [];
+  const pid = windowsPipeServerPid(pipePath);
+  if (pid !== undefined) return [pid];
+  if (!windowsPipeExists(pipePath)) return [];
+  throw new Error(`failed to identify the server of named pipe ${pipePath}`);
 }
 
 function linuxSocketOwners(socketPath: string): number[] {
@@ -96,6 +112,7 @@ function boundPath(socketPath: string): string {
 }
 
 export function socketOwnerPids(socketPath: string): number[] {
+  if (isNamedPipe(socketPath)) return pipeOwners(socketPath);
   if (process.platform === "linux") return linuxSocketOwners(boundPath(socketPath));
   if (process.platform === "darwin") return lsofSocketOwners(boundPath(socketPath));
   throw new Error(`Unix socket ownership discovery is unsupported on ${process.platform}`);
@@ -105,9 +122,11 @@ const systemOwnershipRuntime: SocketOwnershipRuntime = {
   ownerPids: socketOwnerPids,
   processStartTime,
   processMatches,
-  signal: (pid, signal) => process.kill(pid, signal),
+  // Windows has no SIGTERM (Node's would end the gateway alone, orphaning its Claude and Codex children).
+  signal: (pid, signal) => isWindows ? killProcessTreeSync(pid) : process.kill(pid, signal),
   now: Date.now,
   sleep,
+  ...(isWindows ? { endpointGone: (socketPath: string) => !windowsPipeExists(socketPath) } : {}),
 };
 
 function readOwner(path: string): GatewayOwner | undefined {
@@ -224,6 +243,16 @@ export async function stopSocketOwner(
 ): Promise<void> {
   if (!signalExactSocketOwner(socketPath, expected, "SIGTERM", runtime)) return;
   const startedAt = runtime.now();
+  // Windows: the signal already ended the owner's whole tree, and a pipe goes with its server. Polling the pipe listing
+  // instead of asking the pipe's owner each time (a PowerShell run); the owner is identified once more only on timeout.
+  if (runtime.endpointGone && isNamedPipe(socketPath)) {
+    while (runtime.now() - startedAt < STOP_TIMEOUT_MS) {
+      if (runtime.endpointGone(socketPath)) return;
+      await runtime.sleep(POLL_MS);
+    }
+    if (!exactSocketOwnerPresent(socketPath, expected, runtime)) return;
+    throw new Error(`timed out waiting for app-server socket owner ${expected.pid} to stop`);
+  }
   let forced = false;
   while (runtime.now() - startedAt < STOP_TIMEOUT_MS) {
     if (!exactSocketOwnerPresent(socketPath, expected, runtime)) return;

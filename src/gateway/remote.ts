@@ -6,10 +6,12 @@ import { fileURLToPath } from "node:url";
 import { runtimePlatformKey } from "../config.js";
 import { saveDaemonSettings } from "../daemon/settings.js";
 import type { Logger } from "../log.js";
+import { isWindows } from "../platform/process.js";
 import { RpcFailure, invalidRequest, type JsonObject } from "../protocol/codex.js";
 import type { Connection } from "./connection.js";
 
 const START_TIMEOUT_MS = 10_000;
+const UNAVAILABLE_ON_WINDOWS = "remote control is unavailable on Windows";
 const require = createRequire(import.meta.url);
 
 const RELAY_PACKAGES: Readonly<Record<string, string>> = {
@@ -57,6 +59,10 @@ export class RemoteControl {
   ) {}
 
   public start(): Promise<void> {
+    if (this.initiallyEnabled && isWindows) {
+      this.logger.warn("remote-relay.unavailable", { reason: UNAVAILABLE_ON_WINDOWS });
+      return Promise.resolve();
+    }
     return this.initiallyEnabled ? this.serial(() => this.startRelay()) : Promise.resolve();
   }
 
@@ -65,6 +71,7 @@ export class RemoteControl {
   }
 
   public enable(ephemeral: boolean): Promise<JsonObject> {
+    if (isWindows) return Promise.reject(invalidRequest(UNAVAILABLE_ON_WINDOWS));
     return this.serial(async () => {
       await this.startRelay();
       if (!ephemeral) saveDaemonSettings({ remoteControlEnabled: true });

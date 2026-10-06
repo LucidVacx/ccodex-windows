@@ -8,8 +8,11 @@ import { bundledClaudeExecutable, type Config } from "../../src/config.js";
 import { startGateway, type GatewayServer } from "../../src/gateway/server.js";
 import { Logger } from "../../src/log.js";
 import { testConfig } from "../fixtures/config.js";
+import { isWindows, testSocketPath } from "../fixtures/platform.js";
 
 export const FAKE_STOCK = fileURLToPath(new URL("../fixtures/fakeStock.mjs", import.meta.url));
+/** Windows cannot exec the script itself (and CCodex spawns stock without a shell): node runs it there. */
+const STOCK = isWindows ? { codex: process.execPath, args: [FAKE_STOCK, "app-server"] } : { codex: FAKE_STOCK, args: ["app-server"] };
 
 type Message = Record<string, any>;
 
@@ -103,20 +106,20 @@ export interface TestGateway {
 export async function startTestGateway(overrides: Partial<Config> = {}, meta?: object): Promise<TestGateway> {
   const root = mkdtempSync(join(tmpdir(), "ccodex-gw-"));
   const config = testConfig({
-    codex: FAKE_STOCK,
+    codex: STOCK.codex,
     // Its ripgrep searches Claude chats.
     claudeBinary: bundledClaudeExecutable(),
     claudeHome: process.env.CLAUDE_CONFIG_DIR!,
     productHome: root,
     dataDir: join(root, "state"),
-    publicSocket: join(root, "gateway.sock"),
+    publicSocket: testSocketPath(root, "gateway.sock"),
     ...overrides,
   });
   if (meta) {
     mkdirSync(config.dataDir, { recursive: true });
     writeFileSync(join(config.dataDir, "meta.json"), JSON.stringify(meta));
   }
-  const server = await startGateway(config, config.publicSocket, ["app-server"], new Logger("error"), false);
+  const server = await startGateway(config, config.publicSocket, STOCK.args, new Logger("error"), false);
   const clients: Client[] = [];
   return {
     root, config, server,

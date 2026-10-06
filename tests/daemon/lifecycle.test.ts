@@ -1,16 +1,21 @@
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../../src/config.js";
 import { testConfig } from "../fixtures/config.js";
+import { isWindows, testSocketPath, writeExecutable } from "../fixtures/platform.js";
 import { runDaemonCommand } from "../../src/daemon/daemon.js";
 import { socketOwnerPids } from "../../src/daemon/ownership.js";
 import { probeAppServer } from "../../src/daemon/probe.js";
 import { stopManagedProcess, withGatewayStartupFence } from "../../src/daemon/supervisor.js";
 import { prepareUnixSocket } from "../../src/gateway/socket.js";
+
+// Windows: the fake codex is a Node script, which node runs.
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../fixtures/platform.js")).runNodeScripts(await importOriginal<typeof import("node:child_process")>()));
 
 const fixture = resolve("tests/fixtures/fakeDaemonGateway.mjs");
 const unmanagedFixture = resolve("tests/fixtures/fakeUnmanagedGateway.mjs");
@@ -33,11 +38,9 @@ const wire = (value: unknown) => JSON.parse(JSON.stringify(value)) as Record<str
 function harness(): { config: Config; home: string; record: string } {
   const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "hdt-"));
   temporary.push(root);
-  const realCodex = join(root, "codex-real");
-  writeFileSync(realCodex, "#!/bin/sh\nprintf '%s\\n' 'codex-cli 0.153.3'\n", { mode: 0o700 });
-  chmodSync(realCodex, 0o700);
+  const realCodex = writeExecutable(join(root, "codex-real"), { sh: "printf '%s\\n' 'codex-cli 0.153.3'\n", node: "console.log('codex-cli 0.153.3');\n" });
   const home = join(root, "codex-home");
-  const socket = join(home, "app-server-control", "app-server-control.sock");
+  const socket = testSocketPath(join(home, "app-server-control"), "app-server-control.sock");
   const record = join(root, "children.jsonl");
   process.env.CODEX_HOME = home;
   process.env.CODEX_HYBRID_SOCKET = socket;
@@ -58,13 +61,13 @@ afterEach(async () => {
   }
   for (const pid of external.splice(0)) {
     try { process.kill(pid, "SIGTERM"); } catch { /* already stopped */ }
-  }
-  process.env = { ...originalEnv };
+  }  process.env = { ...originalEnv };
   for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
 async function waitFor(path: string): Promise<void> {
-  for (let index = 0; index < 200 && !existsSync(path); index += 1) {
+  // Windows starts node more slowly (and its timers are coarser).
+  for (let index = 0; index < (isWindows ? 1_000 : 200) && !existsSync(path); index += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   expect(existsSync(path)).toBe(true);
@@ -73,7 +76,8 @@ async function waitFor(path: string): Promise<void> {
 async function startUnmanaged(config: Config, home: string, exitAfterProbe = false): Promise<number> {
   const ready = join(home, "unmanaged-ready");
   const gate = join(home, "unmanaged-gate");
-  mkdirSync(dirname(config.publicSocket), { recursive: true });
+  // A Windows pipe lives outside the filesystem (and CODEX_HOME).
+  mkdirSync(isWindows ? home : dirname(config.publicSocket), { recursive: true });
   const child = spawn(process.execPath, [unmanagedFixture], {
     env: {
       ...process.env,
@@ -83,6 +87,7 @@ async function startUnmanaged(config: Config, home: string, exitAfterProbe = fal
       FAKE_UNMANAGED_EXIT_AFTER_PROBE: exitAfterProbe ? "1" : "0",
     },
     stdio: "ignore",
+    windowsHide: true,
   });
   external.push(child.pid!);
   await waitFor(ready);
@@ -129,8 +134,11 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     });
     await run("stop");
 
-    expect(statSync(join(home, "app-server-daemon")).mode & 0o777).toBe(0o700);
-    expect(statSync(join(home, "app-server-daemon", "settings.json")).mode & 0o777).toBe(0o600);
+    // Windows has no POSIX mode bits (its files carry ACLs).
+    if (!isWindows) {
+      expect(statSync(join(home, "app-server-daemon")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(home, "app-server-daemon", "settings.json")).mode & 0o777).toBe(0o600);
+    }
     const children = readFileSync(record, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { pid: number; childPid: number });
     expect(children.length).toBeGreaterThanOrEqual(5);
     expect(children.every(({ pid, childPid }) => !alive(pid) && !alive(childPid))).toBe(true);
@@ -173,7 +181,7 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     const { config, home } = harness();
     const run = (desktop?: string) => runDaemonCommand(config, { command: "start", remoteControl: false, desktop }, fixture);
     const pidFile = join(home, "app-server-daemon", "app-server.pid");
-    const [a, b] = [join(dirname(home), "a.sock"), join(dirname(home), "b.sock")];
+    const [a, b] = [testSocketPath(dirname(home), "a.sock"), testSocketPath(dirname(home), "b.sock")];
     const appA = createServer();
     await new Promise<void>((resolve) => appA.listen(a, () => resolve()));
     const terminal = wire(await run());
@@ -186,9 +194,9 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     expect(wire(await run(a)).status).toBe("alreadyRunning");
     expect(wire(await run()).status).toBe("alreadyRunning");
     expect(wire(await run(b)).status).toBe("alreadyRunning");
-    // Once it closes (its pipe file may stay), the next launch replaces it.
+    // Once it closes (its pipe file may stay; a Windows named pipe goes with it), the next launch replaces it.
     await new Promise<void>((resolve) => appA.close(() => resolve()));
-    writeFileSync(a, "");
+    if (!isWindows) writeFileSync(a, "");
     const next = wire(await run(b));
     expect(next.status).toBe("started");
     expect(alive(desktop.pid as number)).toBe(false);
@@ -258,7 +266,8 @@ describe("npm-backed hybrid daemon lifecycle", () => {
     await run("stop");
   }, 20_000);
 
-  it("does not trust a live managed PID after the socket path is rebound", async () => {
+  // Rebinding needs the live socket's path unlinked; a Windows named pipe's name stays taken while its server lives.
+  it.skipIf(isWindows)("does not trust a live managed PID after the socket path is rebound", async () => {
     const { config, home, record } = harness();
     const run = (command: Parameters<typeof runDaemonCommand>[1]["command"]) =>
       runDaemonCommand(config, { command, remoteControl: false }, fixture);
@@ -284,10 +293,12 @@ describe("npm-backed hybrid daemon lifecycle", () => {
   it("hard-fails without signaling an unrelated process on the public socket", async () => {
     const { config, home } = harness();
     const ready = join(home, "unrelated-ready");
-    mkdirSync(dirname(config.publicSocket), { recursive: true });
+    // A Windows pipe lives outside the filesystem (and CODEX_HOME).
+    mkdirSync(isWindows ? home : dirname(config.publicSocket), { recursive: true });
     const child = spawn(process.execPath, [unrelatedFixture], {
       env: { ...process.env, FAKE_UNRELATED_SOCKET: config.publicSocket, FAKE_UNRELATED_READY: ready },
       stdio: "ignore",
+      windowsHide: true,
     });
     external.push(child.pid!);
     await waitFor(ready);

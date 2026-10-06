@@ -3,7 +3,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv } from "ajv";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -14,7 +15,12 @@ process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "ccodex-claude-schema
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({ ...await importOriginal<object>(), query: fakeQuery, startup: fakeStartup }));
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
-const CODEX = process.env.CCODEX_SCHEMA_CODEX ?? fileURLToPath(new URL("../../node_modules/.bin/codex", import.meta.url));
+// Windows: npm's .bin launchers are scripts; run the native binary of @openai/codex's platform package.
+const devCodex = () => process.platform !== "win32"
+  ? fileURLToPath(new URL("../../node_modules/.bin/codex", import.meta.url))
+  : join(dirname(createRequire(import.meta.url).resolve(`@openai/codex-win32-${process.arch}/package.json`)),
+    "vendor", `${process.arch === "arm64" ? "aarch64" : "x86_64"}-pc-windows-msvc`, "bin", "codex.exe");
+const CODEX = process.env.CCODEX_SCHEMA_CODEX ?? devCodex();
 const text = (value: string) => [{ type: "text", text: value, text_elements: [] }];
 
 let gateway: TestGateway;
@@ -29,7 +35,7 @@ function validate(definition: string, value: unknown, context: string): string[]
 describe("wire objects of Claude threads validate against the installed codex schema", () => {
   beforeAll(async () => {
     const out = mkdtempSync(join(tmpdir(), "ccodex-schema-"));
-    execFileSync(CODEX, ["app-server", "generate-json-schema", "--out", out], { stdio: "ignore" });
+    execFileSync(CODEX, ["app-server", "generate-json-schema", "--out", out], { stdio: "ignore", windowsHide: true });
     ajv = new Ajv({ strict: false, allErrors: true, validateFormats: false });
     ajv.addSchema(JSON.parse(readFileSync(join(out, "codex_app_server_protocol.v2.schemas.json"), "utf8")), "v2");
     ajv.addSchema(JSON.parse(readFileSync(join(out, "ServerRequest.json"), "utf8")), "server-request");

@@ -30,7 +30,7 @@ function visibleText(line: string): string | undefined {
 /** Claude's own ripgrep (its binary run as `rg`) over `args`, a fixed string any case; each output line to `line`, which stops the search by returning true. Lines over 100 KB (tool output) are left out. */
 async function ripgrep(claudeBinary: string, args: string[], line: (text: string) => boolean): Promise<void> {
   const child = spawn(claudeBinary, ["--fixed-strings", "--ignore-case", "--max-columns", "100000", "--no-ignore", "--hidden", ...args],
-    { argv0: "rg", stdio: ["ignore", "pipe", "pipe"] });
+    { argv0: "rg", stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
   let stderr = "";
   child.stderr.on("data", (chunk) => { stderr += chunk; });
   // 0: found, 1: nothing found; stopped early: killed.

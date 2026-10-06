@@ -6,6 +6,7 @@ import { PassThrough, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { testConfig } from "../fixtures/config.js";
+import { testSocketPath } from "../fixtures/platform.js";
 import { runStdioFrontend } from "../../src/desktop/stdioFrontend.js";
 
 const roots: string[] = [];
@@ -28,7 +29,7 @@ afterEach(async () => {
 function socketPath(): string {
   const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "ccodex-stdio-"));
   roots.push(root);
-  return join(root, "gw.sock");
+  return testSocketPath(root, "gw.sock");
 }
 
 async function startFakeGateway(path: string): Promise<{ received: string[]; close: () => Promise<void> }> {

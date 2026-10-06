@@ -128,13 +128,18 @@ export class ClaudeThreads {
     await this.catalog.refresh();
     announce();
     void this.models().catch((error: unknown) => this.logger.warn("claude.models.unavailable", { error: String(error) }));
-    this.sweeper = setInterval(() => this.sweep(), Math.min(60_000, IDLE_MS / 4));
+    this.sweeper = setInterval(() => {
+      if (this.sweeping) return;
+      this.sweeping = true;
+      void this.sweep().finally(() => { this.sweeping = false; });
+    }, Math.min(60_000, IDLE_MS / 4));
     this.sweeper.unref();
   }
 
   /** CPU seconds each command of a loaded session used, and since when unchanged. */
   private cpuSeen = new Map<number, { cpu: number; at: number }>();
   private sweeper?: NodeJS.Timeout;
+  private sweeping = false;
 
   /** What CCodex last did to each chat's process and commands, and why (shown by /cc). */
   private readonly actions = new Map<string, { at: number; text: string }[]>();
@@ -151,16 +156,17 @@ export class ClaudeThreads {
    * the next prompt starts it again. Past MAX_PROCESSES, the quiet chats used longest ago lose their processes too.
    * Closing a process ends the idle commands it leaves.
    */
-  private sweep(): void {
-    const now = Date.now();
-    const sessions = [...this.sessions.values()];
+  private async sweep(): Promise<void> {
     let processes: SessionProcess[] | undefined;
     try {
-      processes = sessions.some((session) => session.loaded) ? sessionProcesses() : [];
+      processes = [...this.sessions.values()].some((session) => session.loaded) ? await sessionProcesses() : [];
     } catch (error) {
       // Unknown commands: a quiet session still goes (as stock's would), and nothing is ended, since nothing says it hung.
       this.logger.warn("claude.processes.unreadable", { error: String(error) });
     }
+    // After the (on Windows, slow) process listing: the sessions as they are now.
+    const now = Date.now();
+    const sessions = [...this.sessions.values()];
     if (processes) this.cpuSeen = new Map(processes.map((process) => {
       const seen = this.cpuSeen.get(process.pid);
       return [process.pid, seen?.cpu === process.cpu ? seen : { cpu: process.cpu, at: now }];
@@ -792,11 +798,25 @@ export class ClaudeThreads {
     const models = await withProbeQuery(this.config, undefined, async (probe) => {
       const models: ClaudeModel[] = await probe.supportedModels();
       // Claude's own context budget per model: its window, capped by settings such as CLAUDE_CODE_AUTO_COMPACT_WINDOW.
+      // A model Claude can't switch to (its API serves no such model) is left out rather than failing the whole list.
+      // Aliases that settings point at one model (ANTHROPIC_DEFAULT_*_MODEL) list it once.
+      const usable: ClaudeModel[] = [];
+      const resolved = new Set<string>();
       for (const model of models) {
-        await probe.setModel(model.value);
-        model.contextWindow = (await probe.getContextUsage({ detail: "summary" })).maxTokens;
+        if (model.value !== "default" && model.resolvedModel) {
+          const key = normalizeClaudeModelIdentifier(model.resolvedModel);
+          if (resolved.has(key)) continue;
+          resolved.add(key);
+        }
+        try {
+          await probe.setModel(model.value);
+          model.contextWindow = (await probe.getContextUsage({ detail: "summary" })).maxTokens;
+          usable.push(model);
+        } catch (error) {
+          this.logger.warn("claude.model.unavailable", { model: model.value, error: String(error) });
+        }
       }
-      return models;
+      return usable;
     });
     const temporary = `${this.modelsPath}.${process.pid}.tmp`;
     void writeFile(temporary, JSON.stringify({ version: packageVersion(), models }), { mode: 0o600 }).then(() => rename(temporary, this.modelsPath)).catch(() => undefined);
@@ -1201,7 +1221,7 @@ export class ClaudeThreads {
     if (!session) return;
     this.sessions.delete(threadId);
     await session.stopTasks();
-    const pids = sessionProcesses().filter((process) => process.session === threadId).map((process) => process.pid);
+    const pids = (await sessionProcesses()).filter((process) => process.session === threadId).map((process) => process.pid);
     await session.unload();
     killProcesses(pids);
   }

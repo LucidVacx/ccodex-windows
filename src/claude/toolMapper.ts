@@ -51,7 +51,11 @@ export function endedBackground(item: ThreadItem, end: BackgroundEnd, startedAtM
 
 /** Claude's file of a command's output (the notification of a command Stop killed does not name it). */
 export function taskOutputFile(cwd: string, sessionId: string, taskId: string): string {
-  return join(tmpdir(), `claude-${process.getuid?.() ?? 0}`, cwd.replace(/[^a-zA-Z0-9]/gu, "-"), sessionId, "tasks", `${taskId}.output`);
+  const file = (root: string) => join(tmpdir(), root, cwd.replace(/[^a-zA-Z0-9]/gu, "-"), sessionId, "tasks", `${taskId}.output`);
+  const uid = process.getuid?.();
+  if (uid !== undefined) return file(`claude-${uid}`);
+  // Windows (no uid): Claude Code 2.1 writes under `%TEMP%\claude\`; `claude-` is the uid-less spelling of the POSIX root.
+  return [file("claude"), file("claude-")].find((path) => existsSync(path)) ?? file("claude");
 }
 
 /** A command Stop killed while Claude waited on it: its output so far, as stock's, not Claude's refusal of the call. */

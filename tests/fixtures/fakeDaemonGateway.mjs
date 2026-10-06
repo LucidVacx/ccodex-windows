@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { createConnection } from "node:net";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 
 const pidFile = process.env.CODEX_HYBRID_DAEMON_PID_FILE;
@@ -13,6 +14,12 @@ const processStartTime = (pid) => {
   if (process.platform === "linux") {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     return `linux:${stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/u)[19]}`;
+  }
+  if (process.platform === "win32") {
+    // As src/platform/process.ts reads it: creation time in UTC .NET ticks.
+    const ticks = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`], { encoding: "utf8", windowsHide: true });
+    return `win32:${ticks.stdout.trim()}`;
   }
   const result = spawnSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" });
   return result.stdout.trim();
@@ -29,7 +36,16 @@ writeFileSync(published, JSON.stringify({
   wrapperPath: reservation.wrapperPath,
   desktop: reservation.desktop,
 }), { mode: 0o600 });
-renameSync(published, pidFile);
+// Windows refuses to replace a file another process has open (the daemon polls this one): retry briefly.
+for (let attempt = 0; ; attempt += 1) {
+  try {
+    renameSync(published, pidFile);
+    break;
+  } catch (error) {
+    if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 100) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 chmodSync(pidFile, 0o600);
 delete process.env.CODEX_HYBRID_DAEMON_PID_FILE;
 delete process.env.CODEX_HYBRID_DAEMON_TOKEN;
@@ -41,8 +57,9 @@ if (process.env.FAKE_DAEMON_HANDOFF === "1" && !existsSync(handoffComplete)) {
   const ready = `${pidFile}.unmanaged-ready`;
   const gate = `${pidFile}.unmanaged-gate`;
   mkdirSync(dirname(process.env.CODEX_HYBRID_SOCKET), { recursive: true, mode: 0o700 });
-  const owner = spawn(process.execPath, [new URL("./fakeUnmanagedGateway.mjs", import.meta.url).pathname], {
+  const owner = spawn(process.execPath, [fileURLToPath(new URL("./fakeUnmanagedGateway.mjs", import.meta.url))], {
     detached: true,
+    windowsHide: true,
     env: { ...process.env, FAKE_UNMANAGED_READY: ready, FAKE_UNMANAGED_GATE: gate },
     stdio: "ignore",
   });
@@ -57,7 +74,7 @@ if (process.env.FAKE_DAEMON_HANDOFF === "1" && !existsSync(handoffComplete)) {
   process.exit(0);
 }
 
-const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
 if (recordPath) appendFileSync(recordPath, `${JSON.stringify({ pid: process.pid, childPid: sleeper.pid, args: process.argv.slice(2) })}\n`);
 
 const socketPath = process.env.CODEX_HYBRID_SOCKET;

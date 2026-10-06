@@ -2,6 +2,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { Config } from "../config.js";
+import { isWindows, killProcessTreeSync } from "../platform/process.js";
+
+/** Windows has no SIGTERM (Node's ends the codex alone): its whole tree ends at once. */
+function stop(child: ChildProcess | undefined): void {
+  if (isWindows && child?.pid !== undefined && child.exitCode === null) killProcessTreeSync(child.pid);
+  else child?.kill("SIGTERM");
+}
 
 /** Written into each session's rollout (`thread_source`), so CCodex's streaming can find the journal of a call. */
 export const MCP_THREAD_SOURCE = "ccodex-mcp";
@@ -75,9 +82,17 @@ function execArgs(tool: string, args: Args): string[] {
 /** Runs one call; resolves with the MCP tool result (the session's last agent message). */
 function runCall(config: Config, tool: string, args: Args, children: Map<unknown, ChildProcess>, id: unknown): Promise<unknown> {
   return new Promise((resolve) => {
-    const child = spawn(config.codex, execArgs(tool, args), { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CCODEX_SHIM_ACTIVE: undefined } });
-    children.set(id, child);
     let threadId: string = args.threadId ?? args.conversationId ?? "";
+    let child: ChildProcess;
+    try {
+      child = spawn(config.codex, execArgs(tool, args), { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, CCODEX_SHIM_ACTIVE: undefined }, windowsHide: true });
+    } catch (spawnError) {
+      // Windows refuses some spawns at once (EINVAL for a `.cmd`) instead of emitting "error".
+      const text = spawnError instanceof Error ? spawnError.message : String(spawnError);
+      resolve({ content: [{ type: "text", text }], structuredContent: { threadId, content: text }, isError: true });
+      return;
+    }
+    children.set(id, child);
     let content = "";
     let error = "";
     let stderr = "";
@@ -114,7 +129,7 @@ export async function runMcpServer(config: Config, version: string, input: Reada
     let message: Args;
     try { message = JSON.parse(line) as Args; } catch { return; }
     const { id, method, params } = message;
-    if (method === "notifications/cancelled") children.get(params?.requestId)?.kill("SIGTERM");
+    if (method === "notifications/cancelled") stop(children.get(params?.requestId));
     if (id === undefined || method === undefined) return;
     if (method === "initialize") {
       send({ id, result: { protocolVersion: params?.protocolVersion ?? "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "codex-mcp-server", title: "Codex", version } } });
@@ -129,6 +144,6 @@ export async function runMcpServer(config: Config, version: string, input: Reada
     }
   });
   await new Promise((resolve) => lines.once("close", resolve));
-  for (const child of children.values()) child.kill("SIGTERM");
+  for (const child of children.values()) stop(child);
   return 0;
 }

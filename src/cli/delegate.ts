@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { isWindows } from "../platform/process.js";
 
 function refuseManagedEntrypoint(command: string): void {
   if (!existsSync(command)) return;
@@ -27,10 +28,13 @@ export function delegate(command: string, args: readonly string[]): Promise<numb
     const child = spawn(command, args, {
       env,
       stdio: "inherit",
+      // No console window flashing up for a non-interactive run; an interactive one keeps its terminal.
+      windowsHide: !process.stdin.isTTY,
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
-      if (signal) {
+      // Windows has no signal to re-raise: a signalled child (only one we killed) reports failure.
+      if (signal && !isWindows) {
         process.kill(process.pid, signal);
         return;
       }

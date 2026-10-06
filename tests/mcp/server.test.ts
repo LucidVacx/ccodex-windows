@@ -1,10 +1,13 @@
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runMcpServer } from "../../src/mcp/server.js";
 import { testConfig } from "../fixtures/config.js";
 
 const FAKE = fileURLToPath(new URL("../fixtures/fakeCodexExec.mjs", import.meta.url));
+// Windows cannot exec the script itself: node runs it there.
+vi.mock("node:child_process", async (importOriginal) =>
+  (await import("../fixtures/platform.js")).runNodeScripts(await importOriginal<typeof import("node:child_process")>()));
 
 async function session() {
   const input = new PassThrough();

@@ -136,6 +136,38 @@ codex app-server daemon restart
 - Never restarts a running gateway: a new version takes over after
   `codex app-server daemon restart`.
 
+### Windows
+
+Windows 11 (x64) installs from a checkout of this repository; it needs Node.js 22.13+ (or 24)
+and Rust (`cargo`) to build the launcher:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+It builds `launcher\` (a small `codex.exe`/`ccodex.exe` that runs CCodex with the recorded
+Node), packs the repository and runs `ccodex setup`, which on Windows:
+
+- puts `codex.exe`, `ccodex.exe` and `ccodex-launcher.cfg` in `~\.ccodex\bin`;
+- sets the user variables `CODEX_CLI_PATH` (to `~\.ccodex\bin\codex.exe`, so the Codex app
+  starts CCodex) and puts `~\.ccodex\bin` first on the user `PATH`; earlier values are kept in
+  `~\.ccodex\install.json` for uninstall;
+- registers the `codex` MCP server for Claude by the launcher's full path, and backs up
+  `~\.claude\settings.json` and `~\.claude.json` before changing them.
+
+Quit and reopen the Codex app afterwards (it reads `CODEX_CLI_PATH` when it starts). Remove it
+with `powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 [-Purge]`.
+
+Known limitations: stopping CCodex force-closes its processes (no graceful shutdown on
+Windows); mobile remote control (relay) not yet supported; the gateway's named pipe is
+per-user by name, intended for single-user machines.
+
+Claude login: CCodex runs your own, unmodified Claude Code (`claude.exe`) signed in with your
+own subscription, and never reads or forwards its credentials. Anthropic's rules for
+subscription use through the Agent SDK are still changing; check
+[Use the Claude Agent SDK with your Claude plan](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+and Claude Code's [legal and compliance](https://code.claude.com/docs/en/legal-and-compliance) page.
+
 ## Update, upgrade from 0.4, uninstall
 
 ```sh

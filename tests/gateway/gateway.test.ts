@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fakeClaude, fakeQuery, fakeStartup } from "../fixtures/fakeClaude.js";
+import { registryEntry } from "../fixtures/platform.js";
 import { startTestGateway, type Client, type TestGateway } from "./harness.js";
 
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "ccodex-claude-"));
@@ -26,6 +27,11 @@ let client: Client;
 async function claudeThread(): Promise<string> {
   const { thread } = await client.request("thread/start", { model: CLAUDE, cwd: "/work" });
   return thread.id;
+}
+
+/** As `client.waitFor`, among the messages from index `since` on (one step's own, not an earlier step's). */
+async function waitSince(since: number, method: string, predicate: (params: any) => boolean): Promise<void> {
+  await vi.waitFor(() => expect(client.messages.slice(since).some((message) => message.method === method && message.id === undefined && predicate(message.params))).toBe(true), { timeout: 10_000, interval: 10 });
 }
 
 async function stockThread(): Promise<string> {
@@ -264,7 +270,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(asked[0].message).toMatchObject({ method: "item/fileChange/requestApproval", params: { threadId } });
     expect(asked[0].patches).toBe(1);
     expect(client.notifications("item/fileChange/patchUpdated", threadId)[0]!.params).toMatchObject({
-      itemId: asked[0].message.params.itemId, changes: [{ path: "/work/notes.txt", kind: { type: "add" }, diff: "fruit=kiwi\n" }],
+      itemId: asked[0].message.params.itemId, changes: [{ path: resolvePath("/work/notes.txt"), kind: { type: "add" }, diff: "fruit=kiwi\n" }],
     });
   });
 
@@ -464,7 +470,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     await client.turn(threadId, "one");
     const sessions = join(process.env.CLAUDE_CONFIG_DIR!, "sessions");
     mkdirSync(sessions, { recursive: true });
-    const register = (pid: number) => writeFileSync(join(sessions, `${pid}.json`), JSON.stringify({ pid, sessionId: threadId }));
+    // Windows: an entry carries its process's creation time; the dead pid's has none to carry.
+    const register = (pid: number) => writeFileSync(join(sessions, `${pid}.json`), JSON.stringify(pid === process.ppid ? registryEntry(pid, threadId) : { pid, sessionId: threadId }));
     register(2 ** 22 + 1);
     await client.turn(threadId, "two");
     register(process.ppid);
@@ -699,7 +706,7 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const set = await client.request("thread/goal/set", { threadId, objective: "ship it" });
     expect(set.goal).toMatchObject({ objective: "ship it", status: "active" });
     // Desktop adds the goal message itself on the answer; the goal's turn starts after it and shows no user message.
-    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+    await waitSince(before, "turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
     const sequence = client.messages.slice(before).map((message) => message.method ?? (message.result?.goal ? "answer" : null));
     expect(sequence.filter((method) => method === "answer" || method === "turn/started")).toEqual(["answer", "turn/started"]);
     const turn = client.messages.slice(before).find((message) => message.method === "turn/started")!.params.turn;
@@ -716,8 +723,9 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect((await client.request("thread/goal/get", { threadId })).goal).toMatchObject({ objective: "ship it", status: "paused" });
     expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).pausedGoals[threadId]).toMatchObject({ objective: "ship it" });
     expect(client.notifications("turn/started", threadId)).toHaveLength(turnsBefore);
+    const resumed = client.messages.length;
     expect((await client.request("thread/goal/set", { threadId, status: "active" })).goal).toMatchObject({ objective: "ship it", status: "active" });
-    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+    await waitSince(resumed, "turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
     expect(JSON.parse(readFileSync(join(gateway.config.dataDir, "meta.json"), "utf8")).pausedGoals).toEqual({});
     // Cleared while paused: Claude has nothing to clear.
     await client.request("thread/goal/set", { threadId, status: "paused" });
@@ -726,8 +734,9 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(await client.request("thread/goal/clear", { threadId })).toEqual({ cleared: true });
     expect((await client.request("thread/goal/get", { threadId })).goal).toBeNull();
     expect(fakeClaude.prompts).toHaveLength(beforeClear);
+    const setAgain = client.messages.length;
     await client.request("thread/goal/set", { threadId, objective: "ship it" });
-    await client.waitFor("turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
+    await waitSince(setAgain, "turn/completed", (params) => params.threadId === threadId && fakeClaude.prompts.at(-1)?.text === "/goal ship it");
 
     // Claude drops a met goal: reported complete once, then Desktop's clear sends Claude nothing.
     await client.turn(threadId, "this meets the goal: ship it");
@@ -752,8 +761,11 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const clearedAt = client.messages.length;
     expect(await client.request("thread/goal/clear", { threadId })).toEqual({ cleared: true });
     await vi.waitFor(() => expect(fakeClaude.prompts.at(-1)?.text).toBe("/goal clear"));
-    expect(client.messages.slice(clearedAt).filter((message) => message.method === "thread/goal/cleared")).toHaveLength(1);
+    // The notification may come in a read of its own after the answer (a pipe delivers them so); it comes once.
+    const cleared = () => client.messages.slice(clearedAt).filter((message) => message.method === "thread/goal/cleared");
+    await vi.waitFor(() => expect(cleared()).toHaveLength(1));
     await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(cleared()).toHaveLength(1);
     expect(client.notifications("turn/started", threadId)).toHaveLength(turns);
     expect((await client.request("thread/goal/get", { threadId })).goal).toBeNull();
     expect(await client.request("thread/goal/clear", { threadId })).toEqual({ cleared: false });
@@ -942,6 +954,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
 
   it("announces a Claude sub-agent before its spawn completes, before Claude has written its transcript", async () => {
     const threadId = await claudeThread();
+    // Its own announcement may follow the answer (a pipe can deliver them in separate reads).
+    await client.waitFor("thread/started", (params) => params.thread.id === threadId);
     const before = client.messages.length;
     await client.turn(threadId, "spawn a sub-agent");
     const childId = "agent-a1b2c3";
@@ -975,6 +989,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const childId = "agent-f0f0f0";
     await new Promise((resolve) => setTimeout(resolve, 400));
     await client.request("thread/resume", { threadId: childId });
+    // The resume's usage report may follow its answer (a pipe can deliver them in separate reads).
+    await client.waitFor("thread/tokenUsage/updated", (params) => params.threadId === childId);
     const before = client.messages.length;
     await client.turn(threadId, "message the finished sub-agent");
     await client.waitFor("turn/completed", (params) => params.threadId === childId);
@@ -1302,7 +1318,8 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     expect(models.data.map((model: any) => model.id)).not.toContain("claude:stale-model");
   });
 
-  it("clears the run directories of gateways killed without stopping", async () => {
+  // POSIX only: stock listens on a socket in a run directory; on Windows it serves loopback websocket, no directory.
+  it.skipIf(process.platform === "win32")("clears the run directories of gateways killed without stopping", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "ccodex-state-"));
     const dead = join(dataDir, "run", String(spawnSync("true").pid));
     mkdirSync(dead, { recursive: true });

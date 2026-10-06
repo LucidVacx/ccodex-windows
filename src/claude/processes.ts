@@ -5,6 +5,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
+import { isWindows, listWindowsProcesses, terminateProcessTree, type WindowsProcessInfo } from "../platform/process.js";
+import { entryNames, sessionEntries } from "./registry.js";
 
 export interface SessionProcess {
   readonly pid: number;
@@ -51,8 +53,46 @@ export function cpuSeconds(time: string): number {
   return Number(days) * 86_400 + clock!.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 }
 
+/** A Windows parent link, unless the recorded parent is gone and its pid now names a younger process. */
+function windowsParents(all: readonly WindowsProcessInfo[]): Map<number, number> {
+  const created = new Map(all.map((info) => [info.pid, info.createdMs]));
+  return new Map(all.flatMap((info) => {
+    const parentCreated = created.get(info.parentPid);
+    return info.pid !== info.parentPid && parentCreated !== undefined && parentCreated <= info.createdMs
+      ? [[info.pid, info.parentPid] as const] : [];
+  }));
+}
+
+/**
+ * What Claude itself starts for its Bash and PowerShell tools (commands, background tasks) ends by saving the working
+ * directory (`pwd -P >| <file>`, `… Out-File -FilePath …claude-pwd-ps-…`); what else it runs (MCP servers) does not.
+ */
+const TOOL_COMMAND = /pwd -P >\||claude-pwd-ps-/u;
+
+/**
+ * Windows lets no process read another's environment: a session's commands are the tool commands the Claude process
+ * its registry entry names started, and their descendants.
+ */
+async function windowsSessionProcesses(): Promise<SessionProcess[]> {
+  const entries = sessionEntries();
+  if (entries.length === 0) return [];
+  const all = await listWindowsProcesses({ commandLine: true });
+  const byPid = new Map(all.map((info) => [info.pid, info]));
+  const claude = new Map(entries.filter((entry) => entryNames(entry, byPid.get(entry.pid))).map((entry) => [entry.pid, entry.sessionId]));
+  if (claude.size === 0) return [];
+  const parents = windowsParents(all);
+  return all.flatMap((info) => {
+    for (let child = info.pid, current = parents.get(info.pid), hops = 0; current !== undefined && hops < 64; child = current, current = parents.get(current), hops += 1) {
+      const session = claude.get(current);
+      if (session) return TOOL_COMMAND.test(byPid.get(child)?.commandLine ?? "") ? [{ pid: info.pid, session, cpu: info.cpu }] : [];
+    }
+    return [];
+  });
+}
+
 /** The commands Claude sessions still run in their process trees, by session. */
-export function sessionProcesses(): SessionProcess[] {
+export async function sessionProcesses(): Promise<SessionProcess[]> {
+  if (isWindows) return windowsSessionProcesses();
   const all = samples();
   const parents = new Map(all.map((sample) => [sample.pid, sample.ppid]));
   const inTree = (pid: number, root: number) => {
@@ -68,22 +108,12 @@ export function sessionProcesses(): SessionProcess[] {
   });
 }
 
-/** The parent of a running process; undefined once it is gone. */
-export function parentPid(pid: number): number | undefined {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
-  } catch {
-    try {
-      return Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).trim()) || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-}
-
-/** SIGTERM now, SIGKILL whatever is left a moment later. */
+/** SIGTERM now, SIGKILL whatever is left a moment later (Windows has no SIGTERM: its trees end at once). */
 export function killProcesses(pids: readonly number[]): void {
+  if (isWindows) {
+    for (const pid of pids) void terminateProcessTree(pid, { graceful: false });
+    return;
+  }
   const signal = (name: NodeJS.Signals) => {
     for (const pid of pids) {
       try { process.kill(pid, name); } catch { /* gone */ }

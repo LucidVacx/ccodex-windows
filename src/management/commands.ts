@@ -1,20 +1,39 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { delegate } from "../cli/delegate.js";
-import { claudeHome, defaultConfigToml, displacedCodexPath, findInstalledCodex, isCcodex, productHome, remoteCodexPath, type Config } from "../config.js";
+import { claudeHome, defaultConfigToml, defaultPublicSocket, displacedCodexPath, findInstalledCodex, isCcodex, productHome, remoteCodexPath, type Config } from "../config.js";
 import { probeAppServer } from "../daemon/probe.js";
 import { reconcileManagedProcess, stopManagedProcess } from "../daemon/supervisor.js";
 import { reconcileOwnedGateway, stopSocketOwner } from "../daemon/ownership.js";
 import { installCliPathAgent, uninstallCliPathAgent, type CliPathAgentInstall } from "../desktop/launchAgent.js";
 import { relayBinary } from "../gateway/remote.js";
+import { isWindows } from "../platform/process.js";
 import { atomicSymlink, atomicWrite } from "./files.js";
 import { compareSemver } from "./shimSelect.js";
+import { applyWindowsEnvironment, backupFile, installLaunchers, restoreWindowsEnvironment, type WindowsEnvironment } from "./windows.js";
 
 const execute = promisify(execFile);
+
+/** Windows' `npm` is a `.cmd` that execFile cannot run without a shell: run npm's own script with this Node. */
+function npm(args: readonly string[], options: { timeout: number; maxBuffer?: number }) {
+  if (!isWindows) return execute("npm", args, options);
+  const cli = join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  if (!existsSync(cli)) throw new Error(`npm not found beside ${process.execPath} (expected ${cli})`);
+  return execute(process.execPath, [cli, ...args], { ...options, windowsHide: true });
+}
+
+/** `npm root -g` (where a newer global CCodex would be), for the Windows launcher's sidecar; best effort. */
+async function npmGlobalRoot(): Promise<string | undefined> {
+  try {
+    return (await npm(["root", "-g"], { timeout: 30_000 })).stdout.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
 const PACKAGE = "@gkorepanov/ccodex";
 const BEGIN = "# >>> ccodex >>>";
 const END = "# <<< ccodex <<<";
@@ -30,6 +49,8 @@ interface Manifest {
   readonly shimHashes: Record<string, string>;
   readonly remoteCodexShim?: { path: string; target: string; backupPath?: string };
   readonly desktopCliPath?: CliPathAgentInstall;
+  /** Windows: the user environment setup changed (CODEX_CLI_PATH, PATH), for uninstall. */
+  readonly windowsEnvironment?: WindowsEnvironment;
   readonly nodeExecutable: string;
   readonly installedAt: string;
 }
@@ -139,9 +160,38 @@ function installRemoteShim(home: string, bin: string): Manifest["remoteCodexShim
   return { path, target, ...(existsSync(backupPath) ? { backupPath } : {}) };
 }
 
+/** scripts/install-claude-stack.sh, in Node: Windows has no `sh`. */
+function installClaudeStackWindows(packageRoot: string, bin: string): void {
+  const claudeDir = process.env.CLAUDE_DIR ?? join(homedir(), ".claude");
+  mkdirSync(join(claudeDir, "agents"), { recursive: true });
+  copyFileSync(join(packageRoot, "agents", "codex-wrapper.md"), join(claudeDir, "agents", "codex-wrapper.md"));
+  process.stdout.write(`installed agent: codex-wrapper -> ${join(claudeDir, "agents", "codex-wrapper.md")}\n`);
+  if (existsSync(join(claudeDir, "skills", "workforce"))) {
+    process.stdout.write(`The workforce skill has become outdated and CCodex no longer manages it. Remove ${join(claudeDir, "skills", "workforce")}, or keep managing it yourself.\n`);
+  }
+  const configDir = process.env.CLAUDE_CONFIG_DIR;
+  const legacyPath = join(configDir || join(homedir(), ".claude"), ".config.json");
+  const configPath = existsSync(legacyPath) ? legacyPath : join(configDir || homedir(), ".claude.json");
+  type Server = { command?: string; timeout?: number };
+  const config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, "utf8")) as { mcpServers?: Record<string, Server> } : {};
+  const server = config.mcpServers?.codex;
+  const timeout = Math.max(server?.timeout ?? 0, 86_400_000);
+  // Claude may not find a bare `codex` (a PATH change reaches new processes only): name the launcher. A command the
+  // user chose stays.
+  const launcher = join(bin, "codex.exe");
+  const command = server?.command === undefined || /^codex(?:\.exe)?$/iu.test(server.command) ? launcher : server.command;
+  if (server?.timeout !== timeout || server.command !== command) {
+    config.mcpServers = { ...config.mcpServers, codex: server ? { ...server, command, timeout } : { type: "stdio", command, args: ["mcp-server"], env: {}, timeout } as Server };
+    backupFile(configPath);
+    atomicWrite(configPath, `${JSON.stringify(config, null, 2)}\n`, existsSync(configPath) ? statSync(configPath).mode & 0o777 : 0o600);
+  }
+  process.stdout.write("codex MCP server: configured (user scope, timeout at least 24 hours)\n");
+}
+
 /** Claude's side of delegation to Codex: the codex-wrapper agent and the codex MCP server. */
-async function installClaudeStack(packageRoot: string): Promise<void> {
+async function installClaudeStack(packageRoot: string, bin: string): Promise<void> {
   try {
+    if (isWindows) return installClaudeStackWindows(packageRoot, bin);
     const env = { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` };
     const { stdout } = await execute("sh", [join(packageRoot, "scripts", "install-claude-stack.sh")], { env, timeout: 60_000, maxBuffer: 512 * 1024 });
     process.stdout.write(stdout);
@@ -156,6 +206,7 @@ function keepClaudeTranscripts(): void {
   const settings = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> : {};
   if (settings.cleanupPeriodDays !== undefined) return;
   mkdirSync(dirname(path), { recursive: true });
+  if (isWindows) backupFile(path);
   atomicWrite(path, `${JSON.stringify({ ...settings, cleanupPeriodDays: 36_500 }, null, 2)}\n`, existsSync(path) ? statSync(path).mode & 0o777 : 0o600);
   process.stdout.write(`Set cleanupPeriodDays: 36500 in ${path}: Claude deletes older transcripts, and with them CCodex's Claude chats.\n`);
 }
@@ -174,7 +225,7 @@ export async function setup(args: readonly string[]): Promise<number> {
     // Dev builds (never published) come as tarballs: the package and its platform relay package.
     const specs = [process.env.CCODEX_PACKAGE_SPEC ?? `${PACKAGE}@${version}`, ...(process.env.CCODEX_RELAY_PACKAGE_SPEC ? [process.env.CCODEX_RELAY_PACKAGE_SPEC] : [])];
     process.stdout.write(`Installing ${specs.join(" ")} into ${target}\n`);
-    await execute("npm", ["install", "--prefix", temporary, "--include=optional", "--ignore-scripts", "--save=false", "--no-audit", "--no-fund", ...specs], {
+    await npm(["install", "--prefix", temporary, "--include=optional", "--ignore-scripts", "--save=false", "--no-audit", "--no-fund", ...specs], {
       timeout: 20 * 60_000, maxBuffer: 8 * 1024 * 1024,
     });
     rmSync(target, { recursive: true, force: true });
@@ -183,7 +234,7 @@ export async function setup(args: readonly string[]): Promise<number> {
   // The version being activated finishes its own setup (shims and layout are its business).
   if (version !== packageVersion()) {
     const cli = join(target, "node_modules", PACKAGE, "dist", "cli", "main.js");
-    const child = spawn(process.execPath, [cli, "setup", "--version", version], { stdio: "inherit" });
+    const child = spawn(process.execPath, [cli, "setup", "--version", version], { stdio: "inherit", windowsHide: true });
     return new Promise((done, fail) => {
       child.once("error", fail);
       child.once("exit", (code) => done(code ?? 1));
@@ -194,11 +245,11 @@ export async function setup(args: readonly string[]): Promise<number> {
   // CCodex runs the Codex that is installed (like install.sh, it installs one when there is none).
   if (!findInstalledCodex(paths.home)) {
     process.stdout.write("No codex on PATH: installing @openai/codex\n");
-    await execute("npm", ["install", "-g", "@openai/codex@latest", "--no-audit", "--no-fund"], { timeout: 20 * 60_000, maxBuffer: 8 * 1024 * 1024 });
+    await npm(["install", "-g", "@openai/codex@latest", "--no-audit", "--no-fund"], { timeout: 20 * 60_000, maxBuffer: 8 * 1024 * 1024 });
   }
   // 0.4 kept its threads in state.sqlite, 0.5 reads Claude's transcripts plus meta.json: migrate once, before activating.
   if (existsSync(join(paths.state, "state.sqlite")) && !existsSync(join(paths.state, "meta.json"))) {
-    const migration = spawn(process.execPath, [join(target, "node_modules", PACKAGE, "scripts", "migrate-0.4-to-0.5.mjs")], { stdio: "inherit" });
+    const migration = spawn(process.execPath, [join(target, "node_modules", PACKAGE, "scripts", "migrate-0.4-to-0.5.mjs")], { stdio: "inherit", windowsHide: true });
     const code = await new Promise<number>((done, fail) => {
       migration.once("error", fail);
       migration.once("exit", (exit) => done(exit ?? 1));
@@ -207,15 +258,26 @@ export async function setup(args: readonly string[]): Promise<number> {
   }
   const previous = readManifest();
   atomicSymlink(join("versions", version), paths.current);
-  const shimHashes: Record<string, string> = {};
-  for (const name of ["codex", "ccodex"] as const) {
-    const content = shim(name, process.execPath);
-    atomicWrite(join(paths.bin, name), content, 0o755);
-    shimHashes[name] = sha256(content);
+  const packageRoot = join(target, "node_modules", PACKAGE);
+  let shimHashes: Record<string, string> = {};
+  let managedShellFiles: string[] = [];
+  let remoteCodexShim: Manifest["remoteCodexShim"];
+  let windowsEnvironment: WindowsEnvironment | undefined;
+  if (isWindows) {
+    // `codex.exe`/`ccodex.exe` launchers and the user environment stand in for the shims and shell rc blocks; Desktop
+    // over SSH (the ~/.local/bin shim) does not reach Windows.
+    shimHashes = installLaunchers(paths.bin, packageRoot, paths.home, await npmGlobalRoot());
+    windowsEnvironment = applyWindowsEnvironment(paths.bin, previous?.windowsEnvironment);
+  } else {
+    for (const name of ["codex", "ccodex"] as const) {
+      const content = shim(name, process.execPath);
+      atomicWrite(join(paths.bin, name), content, 0o755);
+      shimHashes[name] = sha256(content);
+    }
+    managedShellFiles = shellFiles();
+    for (const path of managedShellFiles) writeShellBlock(path, paths.bin);
+    remoteCodexShim = installRemoteShim(paths.home, paths.bin);
   }
-  const managedShellFiles = shellFiles();
-  for (const path of managedShellFiles) writeShellBlock(path, paths.bin);
-  const remoteCodexShim = installRemoteShim(paths.home, paths.bin);
   const configPath = join(paths.home, "config.toml");
   if (!existsSync(configPath)) atomicWrite(configPath, defaultConfigToml(), 0o600);
   const desktopCliPath = process.platform === "darwin" ? installCliPathAgent(join(paths.bin, "codex"), previous?.desktopCliPath) : undefined;
@@ -224,11 +286,12 @@ export async function setup(args: readonly string[]): Promise<number> {
     package: PACKAGE,
     activeVersion: version,
     delegateCodex: previous?.delegateCodex ?? null,
-    publicSocket: previous?.publicSocket ?? join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "app-server-control", "app-server-control.sock"),
+    publicSocket: previous?.publicSocket ?? defaultPublicSocket(),
     managedShellFiles,
     shimHashes,
     ...(remoteCodexShim ? { remoteCodexShim } : {}),
     ...(desktopCliPath ? { desktopCliPath } : {}),
+    ...(windowsEnvironment ? { windowsEnvironment } : {}),
     nodeExecutable: process.execPath,
     installedAt: new Date().toISOString(),
   };
@@ -238,17 +301,18 @@ export async function setup(args: readonly string[]): Promise<number> {
     if (name !== version && name !== previous?.activeVersion) rmSync(join(paths.versions, name), { recursive: true, force: true });
   }
   for (const stale of ["staging", "previous"]) rmSync(join(paths.home, stale), { recursive: true, force: true });
-  const packageRoot = join(target, "node_modules", PACKAGE);
-  await installClaudeStack(packageRoot);
+  await installClaudeStack(packageRoot, paths.bin);
   // Read from the activated version: 0.4 hands over to this setup from ~/.ccodex/staging, removed above.
   process.stdout.write(`CCodex ${version} activated. Restart the gateway: codex app-server daemon restart\n`
-    + `Open a new shell or run: export PATH="${paths.bin}:$PATH"\n`);
+    + (isWindows
+      ? `Quit and reopen the Codex app (it reads CODEX_CLI_PATH when it starts), and open a new terminal (PATH has ${paths.bin}).\n`
+      : `Open a new shell or run: export PATH="${paths.bin}:$PATH"\n`));
   return 0;
 }
 
 export async function update(args: readonly string[]): Promise<number> {
   const channel = args.includes("--next") ? "next" : "latest";
-  const { stdout } = await execute("npm", ["view", PACKAGE, `dist-tags.${channel}`, "--json"], { timeout: 30_000 });
+  const { stdout } = await npm(["view", PACKAGE, `dist-tags.${channel}`, "--json"], { timeout: 30_000 });
   const latest = JSON.parse(stdout) as string;
   const current = readManifest()?.activeVersion;
   if (current && compareSemver(latest, current) <= 0) {
@@ -286,17 +350,27 @@ export async function uninstall(args: readonly string[]): Promise<number> {
     if (remote.backupPath && existsSync(remote.backupPath)) renameSync(remote.backupPath, remote.path);
   }
   if (manifest.desktopCliPath) uninstallCliPathAgent(manifest.desktopCliPath);
-  for (const name of Object.keys(manifest.shimHashes)) rmSync(join(paths.bin, name), { force: true });
+  if (manifest.windowsEnvironment) restoreWindowsEnvironment(manifest.windowsEnvironment);
+  // Windows cannot delete a running exe (the launcher this uninstall may run under): what stays is reported.
+  const remove = (path: string, recursive = false) => {
+    try {
+      rmSync(path, { recursive, force: true });
+    } catch (error) {
+      if (!isWindows) throw error;
+      process.stderr.write(`CCodex uninstall: could not remove ${path} (in use?); delete it once nothing runs it.\n`);
+    }
+  };
+  for (const name of Object.keys(manifest.shimHashes)) remove(join(paths.bin, name));
   for (const path of [paths.current, join(paths.home, "previous"), paths.versions, join(paths.home, "staging"), paths.manifest, paths.bin]) {
-    rmSync(path, { recursive: true, force: true });
+    remove(path, true);
   }
-  if (purge) rmSync(paths.home, { recursive: true, force: true });
+  if (purge) remove(paths.home, true);
   process.stdout.write(purge ? "CCodex uninstalled and state purged.\n" : `CCodex uninstalled; state kept in ${paths.state}.\n`);
   return 0;
 }
 
 async function version(command: string, args: readonly string[]): Promise<string> {
-  const { stdout, stderr } = await execute(command, args, { timeout: 15_000 });
+  const { stdout, stderr } = await execute(command, args, { timeout: 15_000, windowsHide: true });
   return `${stdout}${stderr}`.trim().split("\n")[0]!;
 }
 
@@ -319,12 +393,13 @@ export async function doctor(config: Config, json: boolean): Promise<number> {
     }),
     check("claude", async () => `${config.claudeBinary} (${await version(config.claudeBinary, ["--version"])})`),
     check("claude-auth", async () => {
-      const { stdout } = await execute(config.claudeBinary, ["auth", "status", "--json"], { timeout: 15_000 }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "{}" }));
+      const { stdout } = await execute(config.claudeBinary, ["auth", "status", "--json"], { timeout: 15_000, windowsHide: true }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "{}" }));
       const status = JSON.parse(stdout || "{}") as { loggedIn?: boolean; email?: string; authMethod?: string };
       if (!status.loggedIn) throw new Error("not logged in → run: ccodex auth claude");
       return `${status.email ?? "logged in"} (${status.authMethod ?? "unknown"})`;
     }),
     check("relay", () => {
+      if (process.platform === "win32") return "not supported on Windows (mobile remote control is off)";
       const binary = relayBinary();
       if (!existsSync(binary)) throw new Error(`missing: ${binary}`);
       return binary;

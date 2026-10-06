@@ -4,7 +4,7 @@ import type { Socket } from "node:net";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { ClaudeThreads } from "../claude/threads.js";
-import type { Config } from "../config.js";
+import { isNamedPipe, type Config } from "../config.js";
 import { Logger, RpcRecorder } from "../log.js";
 import { Meta } from "../meta.js";
 import { invalidRequest, RpcFailure, type JsonObject } from "../protocol/codex.js";
@@ -14,7 +14,7 @@ import { Lineages } from "./lineage.js";
 import { RemoteControl } from "./remote.js";
 import { acquireSocketStartupLock, prepareUnixSocket } from "./socket.js";
 import { isStatusCommand, isStatusTurn, statusCommand, statusSkill } from "./status.js";
-import { StockClient, openStockSocket, startStockProcess, type StockProcess } from "./stock.js";
+import { StockClient, openStockSocket, startStockProcess, type StockEndpoint, type StockProcess } from "./stock.js";
 import { Titles } from "./titles.js";
 
 type Handler = (connection: Connection, params: any) => Promise<unknown>;
@@ -71,7 +71,7 @@ export class Gateway {
 
   public async start(stockArgs: readonly string[], remoteControl: boolean): Promise<void> {
     this.stockProcess = await startStockProcess(this.config, stockArgs, this.logger);
-    this.stock = await StockClient.connect(this.stockProcess.socketPath, "ccodex-internal");
+    this.stock = await StockClient.connect(this.stockProcess.endpoint, "ccodex-internal");
     this.stock.onFrame = (text) => this.internalFrame(text);
     this.claude = new ClaudeThreads(this.config, this, this.logger);
     this.catalog = new Catalog(this);
@@ -88,7 +88,7 @@ export class Gateway {
     await this.remote.start();
   }
 
-  public connectionSocket(): string { return this.stockProcess.socketPath; }
+  public stockEndpoint(): StockEndpoint { return this.stockProcess.endpoint; }
 
   public async stop(): Promise<void> {
     await this.remote.stop();
@@ -396,7 +396,7 @@ export async function startGateway(
         return;
       }
       webSockets.handleUpgrade(request, socket, head, (client) => {
-        const upstream = new StockClient(openStockSocket(gateway.connectionSocket()));
+        const upstream = new StockClient(openStockSocket(gateway.stockEndpoint()));
         gateway.connections.add(new Connection(gateway, client, upstream));
       });
     });
@@ -404,7 +404,8 @@ export async function startGateway(
       server.once("error", reject);
       server.listen(socketPath, () => resolve());
     });
-    chmodSync(socketPath, 0o600);
+    // A named pipe has no mode bits; its default DACL gives other users read access only, so they cannot send requests.
+    if (!isNamedPipe(socketPath)) chmodSync(socketPath, 0o600);
     logger.info("gateway.started", { socketPath, codex: config.codex });
     return {
       async stop() {
@@ -413,7 +414,7 @@ export async function startGateway(
         await new Promise<void>((resolve) => server.close(() => resolve()));
         clearTimeout(force);
         await gateway.stop();
-        rmSync(socketPath, { force: true });
+        if (!isNamedPipe(socketPath)) rmSync(socketPath, { force: true });
         logger.info("gateway.stopped", { socketPath });
       },
     };

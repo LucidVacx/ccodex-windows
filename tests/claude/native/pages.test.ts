@@ -1,6 +1,7 @@
 import { mkdtempSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { TranscriptPages, type PageSource } from "../../../src/claude/native/pages.js";
 import { projectTranscript } from "../../../src/claude/native/projector.js";
@@ -16,7 +17,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   return { ...actual, open: (...args: Parameters<typeof actual.open>) => { opens.count += 1; return actual.open(...args); } };
 });
 
-const PROJECT = new URL("../../fixtures/nativeClaudeHome/projects/-home-user-project/", import.meta.url).pathname;
+const PROJECT = fileURLToPath(new URL("../../fixtures/nativeClaudeHome/projects/-home-user-project/", import.meta.url));
 const PAGE = 5;
 
 async function load(path: string) {

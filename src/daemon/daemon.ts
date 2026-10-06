@@ -69,6 +69,7 @@ function paths(config: Config, wrapperPath: string): DaemonPaths {
 async function stockVersion(realCodex: string): Promise<string> {
   const { stdout } = await execFileAsync(realCodex, ["--version"], {
     env: { ...process.env, CODEX_CLI_PATH: undefined },
+    windowsHide: true,
   });
   const version = stdout.trim().split(/\s+/u)[1];
   if (!version) throw new Error(`Codex version output was malformed: ${stdout.trim()}`);
@@ -357,8 +358,5 @@ export function runDaemonCommand(
   invocation: DaemonInvocation,
   wrapperPath: string,
 ): Promise<JsonOutput> {
-  if (process.platform === "win32") {
-    throw new Error("codex app-server daemon lifecycle is only supported on Unix platforms");
-  }
   return new HybridDaemon(config, wrapperPath).run(invocation);
 }

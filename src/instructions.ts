@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 
-const read = (name: string) => readFileSync(new URL(`../instructions/${name}`, import.meta.url), "utf8").trim();
+// A Windows checkout may carry CRLF line endings.
+const read = (name: string) => readFileSync(new URL(`../instructions/${name}`, import.meta.url), "utf8").replace(/\r\n/gu, "\n").trim();
 const CLAUDE = read("ccodex_extra_claude_instructions.md");
 const COMMON = read("ccodex_extra_common_instructions.md");
 

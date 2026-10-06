@@ -1,0 +1,20 @@
+[package]
+name = "ccodex-launcher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Windows stand-in for CCodex's #!/bin/sh codex/ccodex shims: runs CCodex's main.js with the recorded Node."
+
+[[bin]]
+name = "ccodex-launcher"
+path = "src/main.rs"
+
+# Not part of any workspace above it.
+[workspace]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

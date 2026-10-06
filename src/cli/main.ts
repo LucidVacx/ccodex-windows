@@ -4,6 +4,7 @@ import { classifyInvocation, withProxySocket } from "./args.js";
 import { delegate } from "./delegate.js";
 import { loadConfig } from "../config.js";
 import { Logger } from "../log.js";
+import { isWindows } from "../platform/process.js";
 import { publishDaemonChildRecord, withGatewayStartupFence } from "../daemon/supervisor.js";
 import { publishGatewayOwner } from "../daemon/ownership.js";
 import { runDaemonCommand } from "../daemon/daemon.js";
@@ -48,6 +49,8 @@ async function main(): Promise<number> {
   const stopped = new Promise<void>((resolve) => { stop = resolve; });
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+  // Ctrl+Break and a closing console window.
+  if (isWindows) for (const signal of ["SIGBREAK", "SIGHUP"] as const) process.once(signal, stop);
   let releaseDaemonRecord: () => void = () => undefined;
   let releaseGatewayOwner: () => void = () => undefined;
   let gateway: Awaited<ReturnType<typeof startGateway>> | undefined;

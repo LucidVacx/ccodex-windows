@@ -401,7 +401,7 @@ export class ClaudeSession {
 
   public async startTurn(params: JsonObject): Promise<Turn> {
     // Two processes writing one transcript fork it: whatever the other one writes next is lost to the chat.
-    const owner = this.turn ? undefined : foreignOwner(this.host.config.claudeHome, this.threadId);
+    const owner = this.turn ? undefined : await foreignOwner(this.host.config.claudeHome, this.threadId);
     if (owner) throw invalidRequest(`This chat is open in another Claude process (pid ${owner}): close it there or wait until it ends.`);
     const input = normalizeUserInput(params.input ?? []);
     const goal = /^\/goal\s+(\S[\s\S]*)/u.exec(inputText(input))?.[1]!.trim();

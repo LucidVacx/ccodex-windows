@@ -23,7 +23,7 @@ function parserBinary(): string | null {
   }
 }
 
-const RUN = { encoding: "utf8", timeout: 10_000, maxBuffer: 64 << 20 } as const;
+const RUN = { encoding: "utf8", timeout: 10_000, maxBuffer: 64 << 20, windowsHide: true } as const;
 
 /** The parser's answer for `commands`, or undefined when it failed. */
 function decode(stdout: string | undefined, commands: readonly string[]): readonly (readonly ParsedCommand[])[] | undefined {

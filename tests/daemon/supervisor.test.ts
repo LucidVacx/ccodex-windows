@@ -41,13 +41,19 @@ describe("daemon supervisor", () => {
     process.env.CODEX_HYBRID_DAEMON_TOKEN = token;
 
     const release = await publishDaemonChildRecord();
-    // Stock verifies the record by the Linux native identity it checks first: the boot and the start ticks.
-    const startTicks = Number(processStartTime(process.pid)!.slice("linux:".length));
-    expect(JSON.parse(readFileSync(pidFile, "utf8"))).toEqual({
-      pid: process.pid,
-      processStartTime: processStartTime(process.pid),
-      processIdentity: { bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), startTicks },
-    });
+    if (process.platform === "win32") {
+      // Windows: the process creation time (UTC ticks) is the whole identity.
+      expect(processStartTime(process.pid)).toMatch(/^win32:\d+$/u);
+      expect(JSON.parse(readFileSync(pidFile, "utf8"))).toEqual({ pid: process.pid, processStartTime: processStartTime(process.pid) });
+    } else {
+      // Stock verifies the record by the Linux native identity it checks first: the boot and the start ticks.
+      const startTicks = Number(processStartTime(process.pid)!.slice("linux:".length));
+      expect(JSON.parse(readFileSync(pidFile, "utf8"))).toEqual({
+        pid: process.pid,
+        processStartTime: processStartTime(process.pid),
+        processIdentity: { bootId: readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(), startTicks },
+      });
+    }
     release();
     expect(existsSync(pidFile)).toBe(false);
 

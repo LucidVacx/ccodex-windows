@@ -14,6 +14,7 @@ import {
   stopSocketOwner,
 } from "../../src/daemon/ownership.js";
 import type { PidRecord } from "../../src/daemon/supervisor.js";
+import { isWindows, testSocketPath } from "../fixtures/platform.js";
 
 const temporary: string[] = [];
 
@@ -25,7 +26,7 @@ describe("gateway socket ownership", () => {
   it("publishes and compare-deletes ownership for the exact Unix socket process", async () => {
     const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : tmpdir(), "gateway-owner-"));
     temporary.push(root);
-    const socketPath = join(root, "gateway.sock");
+    const socketPath = testSocketPath(root, "gateway.sock");
     const server = createServer();
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -36,16 +37,18 @@ describe("gateway socket ownership", () => {
       "-e",
       "require('node:net').createConnection(process.argv[1]); setInterval(() => {}, 1000)",
       socketPath,
-    ], { stdio: "ignore" });
+    ], { stdio: "ignore", windowsHide: true });
     await connected;
     try {
       // A relay/proxy client connected to the same Unix socket is not the
       // listener owner and must never become a takeover signal target.
       expect(socketOwnerPids(socketPath)).toEqual([process.pid]);
-      // Stock (0.158+) listens under /tmp/codex-daemon-<uid>/ behind a link at the public path.
-      const link = join(root, "public.sock");
-      symlinkSync(socketPath, link);
-      expect(socketOwnerPids(link)).toEqual([process.pid]);
+      // Stock (0.158+) listens under /tmp/codex-daemon-<uid>/ behind a link at the public path (no link to a Windows pipe).
+      if (!isWindows) {
+        const link = join(root, "public.sock");
+        symlinkSync(socketPath, link);
+        expect(socketOwnerPids(link)).toEqual([process.pid]);
+      }
       const release = publishGatewayOwner(socketPath);
       expect(reconcileOwnedGateway(socketPath)).toMatchObject({ pid: process.pid });
       release();
@@ -67,7 +70,7 @@ describe("gateway socket ownership", () => {
       net.createServer().listen(${JSON.stringify(socketPath)}, () => {
         setInterval(() => { for (let i = 0; i < 64; i += 1) fs.closeSync(fs.openSync("/dev/null", "r")); }, 0);
       });
-    `], { stdio: "ignore" });
+    `], { stdio: "ignore", windowsHide: true });
     try {
       const deadline = Date.now() + 10_000;
       while (!existsSync(socketPath) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));

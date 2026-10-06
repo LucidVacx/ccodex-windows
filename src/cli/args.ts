@@ -1,5 +1,5 @@
-import { resolve } from "node:path";
-import type { Config } from "../config.js";
+import { isAbsolute, resolve } from "node:path";
+import { isNamedPipe, type Config } from "../config.js";
 
 const delegatedAppServerCommands = new Set([
   "generate-ts",
@@ -101,7 +101,7 @@ function socketPathFromListen(listen: string | undefined, config: Config): strin
     throw new Error(`CCodex currently requires a Unix listener, received '${listen}'.`);
   }
   const value = listen.slice("unix://".length);
-  return value.startsWith("/") ? value : resolve(value);
+  return isAbsolute(value) || isNamedPipe(value) ? value : resolve(value);
 }
 
 export function classifyInvocation(args: readonly string[], config: Config): Invocation {
@@ -123,7 +123,7 @@ export function classifyInvocation(args: readonly string[], config: Config): Inv
     const proxyArgs = stripOption(appArgs.filter((value) => value !== "proxy"), "--sock");
     return {
       kind: "proxy",
-      socketPath: configuredSocket ? resolve(configuredSocket) : config.publicSocket,
+      socketPath: configuredSocket ? isNamedPipe(configuredSocket) ? configuredSocket : resolve(configuredSocket) : config.publicSocket,
       proxyArgs: [...prefix, "app-server", "proxy", ...proxyArgs],
     };
   }

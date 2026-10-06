@@ -2,6 +2,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, rmSync, unlinkSync, write
 import { createConnection } from "node:net";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { endpointFile, isNamedPipe } from "../config.js";
 
 const LOCK_TIMEOUT_MS = 10_000;
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -16,9 +17,9 @@ function processExists(pid: number): boolean {
 }
 
 export async function acquireSocketStartupLock(path: string): Promise<() => void> {
-  const lockPath = `${path}.startup.lock`;
+  const lockPath = endpointFile(path, ".startup.lock");
   const token = randomUUID();
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + LOCK_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
@@ -66,8 +67,10 @@ function canConnect(path: string): Promise<boolean> {
   });
 }
 
+/** A socket left on disk by a dead server is removed; a named pipe vanishes with its server, so only the live check applies. */
 export async function prepareUnixSocket(path: string): Promise<void> {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const pipe = isNamedPipe(path);
+  if (!pipe) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   if (await canConnect(path)) throw new Error(`Socket '${path}' is already serving a process.`);
-  rmSync(path, { force: true });
+  if (!pipe) rmSync(path, { force: true });
 }

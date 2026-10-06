@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { completeTool, projectToolCompletion, startTool, updateToolInput } from "../../src/claude/toolMapper.js";
 
@@ -55,7 +55,7 @@ describe("Claude tool projection", () => {
       type: "tool_use", id: "read", name: "Read", input: { file_path: "package.json" },
     }, "/tmp/project", "thread-1").item).toMatchObject({
       type: "commandExecution", command: "Read package.json",
-      commandActions: [{ type: "read", name: "package.json", path: "/tmp/project/package.json" }],
+      commandActions: [{ type: "read", name: "package.json", path: resolve("/tmp/project/package.json") }],
     });
     expect(startTool(1, {
       type: "tool_use", id: "grep", name: "Grep", input: { pattern: "needle", path: "src" },
@@ -82,8 +82,8 @@ describe("Claude tool projection", () => {
       type: "commandExecution", id: "image-streamed", command: "Read plots/chart.PNG",
     });
     expect(projectToolCompletion(provisional, state, "image bytes", false, undefined, "/tmp/project")).toEqual({
-      started: { type: "imageView", id: "image-streamed", path: "/tmp/project/plots/chart.PNG" },
-      completed: { type: "imageView", id: "image-streamed", path: "/tmp/project/plots/chart.PNG" },
+      started: { type: "imageView", id: "image-streamed", path: resolve("/tmp/project/plots/chart.PNG") },
+      completed: { type: "imageView", id: "image-streamed", path: resolve("/tmp/project/plots/chart.PNG") },
     });
   });
 
@@ -94,7 +94,7 @@ describe("Claude tool projection", () => {
     const projected = projectToolCompletion(item, state, "ENOENT: no such file", true, undefined, "/tmp/project");
     expect(projected.started).toMatchObject({
       type: "commandExecution", id: "image-failed", command: "Read plots/missing.jpg", status: "inProgress",
-      commandActions: [{ type: "read", path: "/tmp/project/plots/missing.jpg" }],
+      commandActions: [{ type: "read", path: resolve("/tmp/project/plots/missing.jpg") }],
     });
     expect(projected.completed).toMatchObject({
       type: "commandExecution", id: "image-failed", command: "Read plots/missing.jpg", status: "failed",
@@ -125,7 +125,7 @@ describe("Claude tool projection", () => {
     }, "/tmp/project", "thread-1");
     expect(updateToolInput(item, state, { file_path: "package.json" }, "/tmp/project")).toMatchObject({
       type: "commandExecution", id: "non-image", command: "Read package.json",
-      commandActions: [{ type: "read", path: "/tmp/project/package.json" }],
+      commandActions: [{ type: "read", path: resolve("/tmp/project/package.json") }],
     });
   });
 

@@ -277,7 +277,8 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     transcript.write(call);
     yield base(sessionId, call);
     yield base(sessionId, { type: "system", subtype: "task_started", task_id: "fg1", tool_use_id: toolUseId, description: waited[1], task_type: "local_bash", is_backgrounded: false });
-    const file = join(tmpdir(), `claude-${process.getuid!()}`, (options.cwd ?? process.cwd()).replace(/[^a-zA-Z0-9]/gu, "-"), sessionId, "tasks", "fg1.output");
+    // As Claude Code: `claude-<uid>` in the temp directory; Windows has no uid and Claude uses `claude` there.
+    const file = join(tmpdir(), process.getuid ? `claude-${process.getuid()}` : "claude",(options.cwd ?? process.cwd()).replace(/[^a-zA-Z0-9]/gu, "-"), sessionId, "tasks", "fg1.output");
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, "tick 1\ntick 2\n");
     backgrounded = false;

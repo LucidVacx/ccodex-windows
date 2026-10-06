@@ -7,7 +7,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { claudeHome } from "../config.js";
 import type { ThreadItem } from "../protocol/codex.js";
-import { parentPid } from "./processes.js";
+import { entryParent, sessionEntries } from "./registry.js";
 
 /** Which sessions sent and got cross-session messages (`msg_id`), as their transcripts tell. */
 export interface PeerDirectory {
@@ -66,12 +66,13 @@ function runningSession(home: string, match: (session: Fields) => boolean): Fiel
 }
 
 /** A live Claude process that has the session open and is not ours (the claude CLI, another app): its pid. */
-export function foreignOwner(home: string, sessionId: string): number | undefined {
-  const owner = runningSession(home, (session) => {
-    const parent = session.sessionId === sessionId ? parentPid(Number(session.pid)) : undefined;
-    return parent !== undefined && parent !== process.pid;
-  });
-  return owner && Number(owner.pid);
+export async function foreignOwner(home: string, sessionId: string): Promise<number | undefined> {
+  for (const entry of sessionEntries(home)) {
+    if (entry.sessionId !== sessionId) continue;
+    const parent = await entryParent(entry);
+    if (parent !== undefined && parent !== process.pid) return entry.pid;
+  }
+  return undefined;
 }
 
 function thread(peers: Peers, sessionId: string | undefined): string | undefined {
