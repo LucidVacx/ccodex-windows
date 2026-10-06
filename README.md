@@ -139,7 +139,8 @@ codex app-server daemon restart
 ### Windows
 
 Windows 11 (x64) installs from a checkout of this repository; it needs Node.js 22.13+ (or 24)
-and Rust (`cargo`) to build the launcher:
+and Rust (`cargo`) to build the launcher. Double-click `scripts\Install CCodex.cmd` (nothing to
+type; the window stays open at the end), or run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
@@ -153,10 +154,24 @@ Node), packs the repository and runs `ccodex setup`, which on Windows:
   starts CCodex) and puts `~\.ccodex\bin` first on the user `PATH`; earlier values are kept in
   `~\.ccodex\install.json` for uninstall;
 - registers the `codex` MCP server for Claude by the launcher's full path, and backs up
-  `~\.claude\settings.json` and `~\.claude.json` before changing them.
+  `~\.claude\settings.json` and `~\.claude.json` before changing them;
+- adds a Start menu entry **CCodex - Log in to Claude** (`~\.ccodex\bin\Log in to Claude.cmd`).
 
-Quit and reopen the Codex app afterwards (it reads `CODEX_CLI_PATH` when it starts). Remove it
-with `powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 [-Purge]`.
+After install:
+
+1. Quit the Codex app completely and reopen it (it reads `CODEX_CLI_PATH` when it starts). The
+   first Claude model list can take about 10 seconds.
+2. Log in to Claude if the installer did not: Start menu → **CCodex - Log in to Claude**. It
+   opens your browser to sign in (if it does not, copy the link it shows). If Claude Code's
+   `settings.json` sends it to a third-party endpoint (`ANTHROPIC_BASE_URL`), setup and
+   `ccodex doctor` warn: that is not an Anthropic login.
+3. To use `ccodex`/`codex` by name, open a NEW terminal window (close all Windows Terminal
+   windows first: it keeps the PATH it started with).
+4. To reinstall or update from the checkout, quit the Codex app, then run `Install CCodex.cmd`
+   again. It stops a running CCodex gateway first (open chats disconnect).
+
+Remove it with `scripts\Uninstall CCodex.cmd` (or
+`powershell -ExecutionPolicy Bypass -File scripts\uninstall.ps1 [-Purge]`).
 
 Known limitations: stopping CCodex force-closes its processes (no graceful shutdown on
 Windows); mobile remote control (relay) not yet supported; the gateway's named pipe is

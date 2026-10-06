@@ -19,6 +19,7 @@ import { ANSWER_CHARS, assistantBlockItemId, continuationTurnId } from "./native
 import { readTranscriptRecords, type UserRecord } from "./native/records.js";
 import { userText } from "./native/summary.js";
 import { claudeEffort, DELEGATION_OFF, DELEGATION_ON, ULTRA } from "./delegation.js";
+import { authFailureMessage, isAuthFailure, offerLogin } from "./login.js";
 import { foreignOwner, peerKey, peerMessageItem, peerOrigin, sentMessageItem, subagentFiles, type Peers } from "./peers.js";
 import { baseOptions, claudeMode } from "./sdk.js";
 import { endedBackground, killedCommand, proposedChanges, startTool, stoppedCommand, updateToolInput, type ActiveTool, type BackgroundEnd } from "./toolMapper.js";
@@ -1002,8 +1003,9 @@ export class ClaudeSession {
       this.totalUsage = [...this.usageByMessage.values()].reduce(addUsage, EMPTY_USAGE);
       this.emitUsage();
     }
-    if (m.error && this.turn) this.turn.error = typeof m.error === "string" ? `Claude error: ${m.error}` : "Claude request failed.";
-    const blocks: any[] = Array.isArray(message.content) ? message.content : [];
+    if (m.error && this.turn) this.turn.error = typeof m.error === "string" ? this.turnError(`Claude error: ${m.error}`) : "Claude request failed.";
+    // Claude's own word on a missing login ("Not logged in · Please run /login") is the turn's error, not a reply.
+    const blocks: any[] = Array.isArray(message.content) && !(m.error && isAuthFailure(m.error)) ? message.content : [];
     blocks.forEach((block, position) => {
       if (block.type === "tool_use" || block.type === "server_tool_use" || block.type === "mcp_tool_use") {
         this.toolStarted(block, position);
@@ -1144,12 +1146,19 @@ export class ClaudeSession {
     if (m.subtype !== "success" && !this.turn.interrupted) {
       const errors = Array.isArray(m.errors) ? m.errors.join("\n") : "";
       if (m.subtype === "error_during_execution" && !errors) this.turn.interrupted = true;
-      else this.turn.error = errors || `Claude turn ended: ${m.subtype}`;
+      else this.turn.error = this.turnError(errors || `Claude turn ended: ${m.subtype}`);
     } else if (m.is_error && typeof m.result === "string" && !this.turn.interrupted) {
-      this.turn.error = m.result;
+      this.turn.error = this.turnError(m.result);
     }
     this.emitUsage();
     this.maybeComplete();
+  }
+
+  /** A turn's error as the chat shows it: a missing Claude login says how to sign in (Claude's words go to the log). */
+  private turnError(text: string): string {
+    if (!isAuthFailure(text)) return text;
+    offerLogin(this.host.logger, text);
+    return authFailureMessage();
   }
 
   private emitUsage(): void {

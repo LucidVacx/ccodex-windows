@@ -2,14 +2,21 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 # Builds the launcher (launcher\, Rust) and the TypeScript, packs the repo, then runs `ccodex setup` with that tarball:
 # ~\.ccodex (versions, current, bin\codex.exe + ccodex.exe), user CODEX_CLI_PATH and PATH, Claude's codex MCP server.
+# Double-click "scripts\Install CCodex.cmd" to run it without typing. Then it offers to log in to Claude.
 [CmdletBinding()]
 param(
   # Use launcher\bin\win32-<arch>\ccodex-launcher.exe as it is (no cargo build).
-  [switch]$SkipLauncherBuild
+  [switch]$SkipLauncherBuild,
+  # Ask nothing: stop a running gateway without asking, and skip the Claude login offer.
+  [switch]$NonInteractive
 )
 # Native tools (npm, cargo) write progress to stderr, which Windows PowerShell 5.1 turns into errors under Stop:
 # failures are checked by exit code, and cmdlets that must not fail say -ErrorAction Stop.
 $ErrorActionPreference = 'Continue'
+
+# Questions need a console someone types into (not -NonInteractive, redirected input, or powershell -NonInteractive).
+$interactive = -not $NonInteractive -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and
+  -not ([Environment]::GetCommandLineArgs() | Where-Object { $_ -ieq '-NonInteractive' })
 
 function Fail([string]$Message) {
   [Console]::Error.WriteLine("CCodex install failed: $Message")
@@ -69,11 +76,43 @@ $version = (Get-Content (Join-Path $repo 'package.json') -Raw | ConvertFrom-Json
 
 $env:CCODEX_PACKAGE_SPEC = $tarball.FullName
 try {
-  # --repair: a local build reuses the version number, so reinstall it.
-  & $node (Join-Path $repo 'dist\cli\main.js') setup --version $version --repair
+  # --repair: a local build reuses the version number, so reinstall it. Setup itself asks before stopping a running
+  # gateway (its files are locked while it runs); --yes when nobody can answer.
+  $setupArgs = @('setup', '--version', $version, '--repair')
+  if (-not $interactive) { $setupArgs += '--yes' }
+  & $node (Join-Path $repo 'dist\cli\main.js') @setupArgs
   if ($LASTEXITCODE -ne 0) { Fail "ccodex setup exited with $LASTEXITCODE." }
 } finally {
   Remove-Item Env:\CCODEX_PACKAGE_SPEC
   Remove-Item -Recurse -Force $packs -ErrorAction SilentlyContinue
 }
-Write-Host "CCodex $version installed. Quit and reopen the Codex app, and open a new terminal."
+Write-Host "CCodex $version installed."
+
+# Claude login, through the installed launcher by full path (this window's PATH predates the install).
+$ccodexHome = if ($env:CCODEX_HOME) { $env:CCODEX_HOME } else { Join-Path $env:USERPROFILE '.ccodex' }
+$ccodex = Join-Path $ccodexHome 'bin\ccodex.exe'
+$loginStep = "Start menu -> CCodex - Log in to Claude, or run: `"$ccodex`" auth claude"
+$status = $null
+try { $status = (& $ccodex auth status 2>$null | Select-Object -Last 1) | ConvertFrom-Json } catch { }
+if (-not $status) {
+  Write-Host "Could not check the Claude login. To log in: $loginStep"
+} elseif ($status.relayHost) {
+  # setup printed how to switch from the third-party endpoint; a login alone would not change where Claude goes.
+  Write-Host "Claude Code uses the third-party endpoint $($status.relayHost) (see the warning above). After removing it, log in: $loginStep"
+} elseif (-not $status.anthropicLogin) {
+  $why = if ($status.loggedIn) { "Claude Code is logged in with '$($status.authMethod)', not a claude.ai account." } else { 'Claude Code is not logged in.' }
+  Write-Host $why
+  if ($interactive) {
+    $answer = Read-Host 'Log in to Claude now? [Y/n]'
+    if ($answer -notmatch '^\s*n') {
+      & $ccodex auth claude
+      if ($LASTEXITCODE -eq 0) { Write-Host 'Logged in to Claude.' } else { Write-Host "Claude login did not finish. Later: $loginStep" }
+    } else {
+      Write-Host "Later: $loginStep"
+    }
+  } else {
+    Write-Host "Next step, log in to Claude: $loginStep"
+  }
+} else {
+  Write-Host "Claude: logged in as $($status.email) ($($status.authMethod))."
+}

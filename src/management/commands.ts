@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { promisify } from "node:util";
 import { delegate } from "../cli/delegate.js";
 import { claudeHome, defaultConfigToml, defaultPublicSocket, displacedCodexPath, findInstalledCodex, isCcodex, productHome, remoteCodexPath, type Config } from "../config.js";
@@ -11,10 +12,15 @@ import { reconcileManagedProcess, stopManagedProcess } from "../daemon/superviso
 import { reconcileOwnedGateway, stopSocketOwner } from "../daemon/ownership.js";
 import { installCliPathAgent, uninstallCliPathAgent, type CliPathAgentInstall } from "../desktop/launchAgent.js";
 import { relayBinary } from "../gateway/remote.js";
-import { isWindows } from "../platform/process.js";
+import { isProcessAlive, isWindows } from "../platform/process.js";
 import { atomicSymlink, atomicWrite } from "./files.js";
 import { compareSemver } from "./shimSelect.js";
-import { applyWindowsEnvironment, backupFile, installLaunchers, restoreWindowsEnvironment, type WindowsEnvironment } from "./windows.js";
+import { claudeSettingsPath, configuredRelayHost, relayWarning } from "./claudeRelay.js";
+import { runClaudeLogin } from "./claudeLogin.js";
+import {
+  applyWindowsEnvironment, backupFile, commandHint, installLaunchers, installLoginShortcut, loginHint, removeLoginShortcut,
+  removeStaleInstalls, restoreWindowsEnvironment, type WindowsEnvironment, type WindowsLogin,
+} from "./windows.js";
 
 const execute = promisify(execFile);
 
@@ -51,6 +57,8 @@ interface Manifest {
   readonly desktopCliPath?: CliPathAgentInstall;
   /** Windows: the user environment setup changed (CODEX_CLI_PATH, PATH), for uninstall. */
   readonly windowsEnvironment?: WindowsEnvironment;
+  /** Windows: the "Log in to Claude" script and its Start menu entry. */
+  readonly windowsLogin?: WindowsLogin;
   readonly nodeExecutable: string;
   readonly installedAt: string;
 }
@@ -70,6 +78,68 @@ export function packageVersion(): string {
 function readManifest(): Manifest | undefined {
   const path = layout().manifest;
   return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as Manifest : undefined;
+}
+
+/** `ccodex …`/`codex …` as a user can run it now: on Windows by full path while this terminal lacks it on PATH. */
+const hint = (name: "ccodex" | "codex", args: string) => isWindows ? commandHint(layout().bin, name, args) : `${name} ${args}`;
+const claudeLoginHint = () => isWindows ? loginHint(layout().bin) : "ccodex auth claude";
+
+const daemonPidFile = () => join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "app-server-daemon", "app-server.pid");
+
+/** The running CCodex gateway (the daemon's, or one serving `publicSocket`), with how to stop it. */
+function runningGateway(publicSocket: string | undefined): { pid: number; stop: () => Promise<void> } | undefined {
+  const pidFile = daemonPidFile();
+  const managed = reconcileManagedProcess(pidFile);
+  if (managed) return { pid: managed.pid, stop: () => stopManagedProcess(pidFile, managed) };
+  const owner = publicSocket ? reconcileOwnedGateway(publicSocket) : undefined;
+  return owner && publicSocket ? { pid: owner.pid, stop: () => stopSocketOwner(publicSocket, owner) } : undefined;
+}
+
+/** A yes/no question on the console; `fallback` without one (scripts, --yes). */
+async function confirm(question: string, fallback: boolean): Promise<boolean> {
+  if (!process.stdin.isTTY) return fallback;
+  const prompt = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return !/^\s*n/iu.test(await prompt.question(question));
+  } finally {
+    prompt.close();
+  }
+}
+
+/**
+ * Windows locks the files a running gateway (its Claude processes) uses, so replacing its version needs it stopped
+ * first. The Codex app starts it again while open: it should be quit before.
+ */
+async function stopGatewayForReplacement(publicSocket: string | undefined, assumeYes: boolean): Promise<void> {
+  const gateway = runningGateway(publicSocket);
+  if (!gateway) return;
+  process.stdout.write(`The CCodex gateway is running (pid ${gateway.pid}) and uses the files this setup replaces, so it has to stop.\n`
+    + "Open Codex app chats will disconnect. Quit the Codex app first, or it starts the gateway again.\n");
+  if (!assumeYes && !await confirm("Stop the gateway and continue? [Y/n] ", true)) {
+    throw new Error("Setup cancelled; nothing was changed.");
+  }
+  await gateway.stop();
+  process.stdout.write("Stopped the CCodex gateway.\n");
+}
+
+/** Windows: the version directory replaced by renaming (a locked file fails the rename, not half a delete). */
+function replaceVersion(temporary: string, target: string, version: string): void {
+  if (!isWindows) {
+    rmSync(target, { recursive: true, force: true });
+    renameSync(temporary, target);
+    return;
+  }
+  const aside = `${target}.old-${process.pid}`;
+  try {
+    if (existsSync(target)) renameSync(target, aside);
+  } catch (error) {
+    rmSync(temporary, { recursive: true, force: true });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") throw error;
+    throw new Error(`CCodex ${version} is in use (${code}): quit the Codex app, run ${hint("codex", "app-server daemon stop")}, then run setup again.`);
+  }
+  renameSync(temporary, target);
+  try { rmSync(aside, { recursive: true, force: true }); } catch { /* removed by the next setup */ }
 }
 
 const sha256 = (content: string | Buffer) => createHash("sha256").update(content).digest("hex");
@@ -219,17 +289,25 @@ export async function setup(args: readonly string[]): Promise<number> {
   const paths = layout();
   for (const directory of [paths.home, paths.bin, paths.versions, paths.state]) mkdirSync(directory, { recursive: true, mode: 0o700 });
   const target = join(paths.versions, version);
+  if (isWindows) removeStaleInstalls(paths.versions, isProcessAlive);
   if (!existsSync(target) || args.includes("--repair")) {
+    if (isWindows && existsSync(target)) await stopGatewayForReplacement(readManifest()?.publicSocket ?? defaultPublicSocket(), args.includes("--yes"));
     const temporary = `${target}.installing-${process.pid}`;
     rmSync(temporary, { recursive: true, force: true });
     // Dev builds (never published) come as tarballs: the package and its platform relay package.
     const specs = [process.env.CCODEX_PACKAGE_SPEC ?? `${PACKAGE}@${version}`, ...(process.env.CCODEX_RELAY_PACKAGE_SPEC ? [process.env.CCODEX_RELAY_PACKAGE_SPEC] : [])];
     process.stdout.write(`Installing ${specs.join(" ")} into ${target}\n`);
-    await npm(["install", "--prefix", temporary, "--include=optional", "--ignore-scripts", "--save=false", "--no-audit", "--no-fund", ...specs], {
-      timeout: 20 * 60_000, maxBuffer: 8 * 1024 * 1024,
-    });
-    rmSync(target, { recursive: true, force: true });
-    renameSync(temporary, target);
+    try {
+      await npm(["install", "--prefix", temporary, "--include=optional", "--ignore-scripts", "--save=false", "--no-audit", "--no-fund", ...specs], {
+        timeout: 20 * 60_000, maxBuffer: 8 * 1024 * 1024,
+      });
+    } catch (error) {
+      rmSync(temporary, { recursive: true, force: true });
+      throw error;
+    }
+    replaceVersion(temporary, target, version);
+    // The cached Claude model list may come from another login or endpoint: the next gateway lists them afresh.
+    if (isWindows) rmSync(join(paths.state, "claude-models.json"), { force: true });
   }
   // The version being activated finishes its own setup (shims and layout are its business).
   if (version !== packageVersion()) {
@@ -263,11 +341,15 @@ export async function setup(args: readonly string[]): Promise<number> {
   let managedShellFiles: string[] = [];
   let remoteCodexShim: Manifest["remoteCodexShim"];
   let windowsEnvironment: WindowsEnvironment | undefined;
+  let windowsLogin: WindowsLogin | undefined;
   if (isWindows) {
     // `codex.exe`/`ccodex.exe` launchers and the user environment stand in for the shims and shell rc blocks; Desktop
     // over SSH (the ~/.local/bin shim) does not reach Windows.
     shimHashes = installLaunchers(paths.bin, packageRoot, paths.home, await npmGlobalRoot());
     windowsEnvironment = applyWindowsEnvironment(paths.bin, previous?.windowsEnvironment);
+    const login = installLoginShortcut(paths.bin);
+    windowsLogin = login.login;
+    shimHashes[basename(login.login.cmd)] = login.hash;
   } else {
     for (const name of ["codex", "ccodex"] as const) {
       const content = shim(name, process.execPath);
@@ -292,6 +374,7 @@ export async function setup(args: readonly string[]): Promise<number> {
     ...(remoteCodexShim ? { remoteCodexShim } : {}),
     ...(desktopCliPath ? { desktopCliPath } : {}),
     ...(windowsEnvironment ? { windowsEnvironment } : {}),
+    ...(windowsLogin ? { windowsLogin } : {}),
     nodeExecutable: process.execPath,
     installedAt: new Date().toISOString(),
   };
@@ -302,10 +385,16 @@ export async function setup(args: readonly string[]): Promise<number> {
   }
   for (const stale of ["staging", "previous"]) rmSync(join(paths.home, stale), { recursive: true, force: true });
   await installClaudeStack(packageRoot, paths.bin);
+  if (isWindows) {
+    const relay = configuredRelayHost();
+    if (relay) process.stderr.write(`\n${relayWarning(relay, claudeSettingsPath(), claudeLoginHint())}\n\n`);
+  }
   // Read from the activated version: 0.4 hands over to this setup from ~/.ccodex/staging, removed above.
-  process.stdout.write(`CCodex ${version} activated. Restart the gateway: codex app-server daemon restart\n`
+  process.stdout.write(`CCodex ${version} activated. Restart the gateway: ${hint("codex", "app-server daemon restart")}\n`
     + (isWindows
-      ? `Quit and reopen the Codex app (it reads CODEX_CLI_PATH when it starts), and open a new terminal (PATH has ${paths.bin}).\n`
+      ? "Quit and reopen the Codex app (it reads CODEX_CLI_PATH when it starts); its first Claude model list can take about 10 seconds.\n"
+        + `Log in to Claude: ${claudeLoginHint()}\n`
+        + "Open a NEW terminal window (close all Windows Terminal windows first) to use `ccodex`/`codex` by name.\n"
       : `Open a new shell or run: export PATH="${paths.bin}:$PATH"\n`));
   return 0;
 }
@@ -328,17 +417,11 @@ export async function update(args: readonly string[]): Promise<number> {
 
 export async function uninstall(args: readonly string[]): Promise<number> {
   const purge = args.includes("--purge");
-  if (purge && !args.includes("--yes")) throw new Error("Purging removes all CCodex state. Confirm with: ccodex uninstall --purge --yes");
+  if (purge && !args.includes("--yes")) throw new Error(`Purging removes all CCodex state. Confirm with: ${hint("ccodex", "uninstall --purge --yes")}`);
   const paths = layout();
   const manifest = readManifest();
   if (!manifest) throw new Error("CCodex is not activated.");
-  const pidFile = join(process.env.CODEX_HOME ?? join(homedir(), ".codex"), "app-server-daemon", "app-server.pid");
-  const managed = reconcileManagedProcess(pidFile);
-  if (managed) await stopManagedProcess(pidFile, managed);
-  else if (manifest.publicSocket) {
-    const owner = reconcileOwnedGateway(manifest.publicSocket);
-    if (owner) await stopSocketOwner(manifest.publicSocket, owner);
-  }
+  await runningGateway(manifest.publicSocket)?.stop();
   for (const path of manifest.managedShellFiles) {
     if (!existsSync(path)) continue;
     const content = readFileSync(path, "utf8");
@@ -351,6 +434,7 @@ export async function uninstall(args: readonly string[]): Promise<number> {
   }
   if (manifest.desktopCliPath) uninstallCliPathAgent(manifest.desktopCliPath);
   if (manifest.windowsEnvironment) restoreWindowsEnvironment(manifest.windowsEnvironment);
+  if (manifest.windowsLogin) removeLoginShortcut(manifest.windowsLogin);
   // Windows cannot delete a running exe (the launcher this uninstall may run under): what stays is reported.
   const remove = (path: string, recursive = false) => {
     try {
@@ -383,20 +467,25 @@ export async function doctor(config: Config, json: boolean): Promise<number> {
       return { id, ok: false, detail: error instanceof Error ? error.message.split("\n")[0]! : String(error) };
     }
   };
+  const relay = configuredRelayHost();
   const checks = await Promise.all([
     check("node", () => process.version),
     check("codex", async () => `${config.codex} (${await version(config.codex, ["--version"])})`),
     check("codex-auth", async () => {
       const status = await version(config.codex, ["login", "status"]);
-      if (/not logged in/iu.test(status)) throw new Error(`${status} → run: ccodex auth codex`);
+      if (/not logged in/iu.test(status)) throw new Error(`${status} → run: ${hint("ccodex", "auth codex")}`);
       return status;
     }),
     check("claude", async () => `${config.claudeBinary} (${await version(config.claudeBinary, ["--version"])})`),
     check("claude-auth", async () => {
-      const { stdout } = await execute(config.claudeBinary, ["auth", "status", "--json"], { timeout: 15_000, windowsHide: true }).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "{}" }));
-      const status = JSON.parse(stdout || "{}") as { loggedIn?: boolean; email?: string; authMethod?: string };
-      if (!status.loggedIn) throw new Error("not logged in → run: ccodex auth claude");
+      const status = await claudeAuthStatus(config);
+      if (!status.loggedIn) throw new Error(`not logged in → ${claudeLoginHint()}`);
       return `${status.email ?? "logged in"} (${status.authMethod ?? "unknown"})`;
+    }),
+    // Warns only: a third-party ANTHROPIC_BASE_URL in Claude's settings (host only: its env block carries a token).
+    check("claude-endpoint", () => {
+      if (relay) throw new Error(`third-party endpoint ${relay} (ANTHROPIC_BASE_URL in ${claudeSettingsPath()}), not an Anthropic login; see below`);
+      return "Anthropic";
     }),
     check("relay", () => {
       if (process.platform === "win32") return "not supported on Windows (mobile remote control is off)";
@@ -410,16 +499,46 @@ export async function doctor(config: Config, json: boolean): Promise<number> {
     }),
     check("install", () => {
       const manifest = readManifest();
-      if (!manifest) throw new Error("not activated → run: ccodex setup");
+      if (!manifest) throw new Error(`not activated → run: ${hint("ccodex", "setup")}`);
       const remote = manifest.remoteCodexShim;
       // Codex's installer (or Desktop's "Update Codex") puts its own codex there, and SSH sessions skip CCodex.
-      if (remote && !(existsSync(remote.path) && isCcodex(remote.path))) throw new Error(`${remote.path} is not CCodex, Desktop over SSH bypasses it → run: ccodex setup`);
+      if (remote && !(existsSync(remote.path) && isCcodex(remote.path))) throw new Error(`${remote.path} is not CCodex, Desktop over SSH bypasses it → run: ${hint("ccodex", "setup")}`);
       return `${manifest.activeVersion} (${basename(readlinkSync(layout().current))})`;
     }),
   ]);
-  if (json) process.stdout.write(`${JSON.stringify({ ok: checks.every((item) => item.ok || item.id === "gateway"), checks }, null, 2)}\n`);
-  else for (const item of checks) process.stdout.write(`${item.ok ? "✓" : "✗"} ${item.id}: ${item.detail}\n`);
-  return checks.every((item) => item.ok || item.id === "gateway") ? 0 : 1;
+  const counts = (item: { id: string; ok: boolean }) => item.ok || item.id === "gateway" || item.id === "claude-endpoint";
+  if (json) process.stdout.write(`${JSON.stringify({ ok: checks.every(counts), checks }, null, 2)}\n`);
+  else {
+    for (const item of checks) process.stdout.write(`${item.ok ? "✓" : "✗"} ${item.id}: ${item.detail}\n`);
+    if (relay) process.stdout.write(`\n${relayWarning(relay, claudeSettingsPath(), claudeLoginHint())}\n`);
+  }
+  return checks.every(counts) ? 0 : 1;
+}
+
+interface ClaudeAuthStatus {
+  readonly loggedIn: boolean;
+  readonly authMethod?: string;
+  readonly email?: string;
+}
+
+/** `claude auth status --json` of the claude CCodex runs (it exits 1 when not logged in, still printing the JSON). */
+async function claudeAuthStatus(config: Config): Promise<ClaudeAuthStatus> {
+  const { stdout } = await execute(config.claudeBinary, ["auth", "status", "--json"], { timeout: 15_000, windowsHide: true })
+    .catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "{}" }));
+  const status = JSON.parse(stdout || "{}") as { loggedIn?: boolean; email?: string; authMethod?: string };
+  return { loggedIn: status.loggedIn === true, ...(status.authMethod ? { authMethod: status.authMethod } : {}), ...(status.email ? { email: status.email } : {}) };
+}
+
+/**
+ * `ccodex auth status`: Claude's login as CCodex uses it, and whether it is an Anthropic (claude.ai) login that no
+ * third-party endpoint overrides. JSON for scripts (install.ps1); exit 0 only for an Anthropic login.
+ */
+async function authStatus(config: Config): Promise<number> {
+  const status = await claudeAuthStatus(config);
+  const relayHost = configuredRelayHost();
+  const anthropicLogin = status.loggedIn && status.authMethod === "claude.ai" && !relayHost;
+  process.stdout.write(`${JSON.stringify({ ...status, ...(relayHost ? { relayHost } : {}), anthropicLogin, loginHint: claudeLoginHint() })}\n`);
+  return anthropicLogin ? 0 : 1;
 }
 
 export async function runManagementCommand(args: readonly string[], config: () => Config): Promise<number | undefined> {
@@ -430,8 +549,12 @@ export async function runManagementCommand(args: readonly string[], config: () =
     case "doctor": return doctor(config(), args.includes("--json"));
     case "auth":
       if (args[1] === "codex") return delegate(config().codex, ["login"]);
-      if (args[1] === "claude") return delegate(config().claudeBinary, ["auth", "login"]);
-      throw new Error("Usage: ccodex auth codex|claude");
+      if (args[1] === "claude") {
+        // Windows: CCodex opens (and copies) the login link itself when Claude does not.
+        return isWindows ? runClaudeLogin(config().claudeBinary, ["auth", "login"]) : delegate(config().claudeBinary, ["auth", "login"]);
+      }
+      if (args[1] === "status") return authStatus(config());
+      throw new Error("Usage: ccodex auth codex|claude|status");
     default: return undefined;
   }
 }

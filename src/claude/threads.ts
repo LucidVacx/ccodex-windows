@@ -21,6 +21,7 @@ import { projectSubagents, type ProjectedSubagent } from "./native/subagents.js"
 import { readTranscriptRecords } from "./native/records.js";
 import { preview, summarizeTranscript, userText, type TranscriptHeader } from "./native/summary.js";
 import { claudeMode, codexPermissions, mapClaudeModel, mapSkill, permissionSettings, withProbeQuery } from "./sdk.js";
+import { isAuthFailure, offerLogin } from "./login.js";
 import { killProcesses, sessionProcesses, type SessionProcess } from "./processes.js";
 import { ClaudeSession, type SessionSettings } from "./session.js";
 import type { Meta } from "../meta.js";
@@ -795,6 +796,7 @@ export class ClaudeThreads {
 
   /** Asks Claude for its models and keeps them for the next start. */
   private async probeModels(): Promise<JsonObject[]> {
+    let authFailure: string | undefined;
     const models = await withProbeQuery(this.config, undefined, async (probe) => {
       const models: ClaudeModel[] = await probe.supportedModels();
       // Claude's own context budget per model: its window, capped by settings such as CLAUDE_CODE_AUTO_COMPACT_WINDOW.
@@ -814,10 +816,20 @@ export class ClaudeThreads {
           usable.push(model);
         } catch (error) {
           this.logger.warn("claude.model.unavailable", { model: model.value, error: String(error) });
+          if (isAuthFailure(String(error))) authFailure ??= String(error);
         }
       }
       return usable;
+    }).catch((error: unknown) => {
+      // Not signed in: Claude's sign-in is offered (Windows: its login window, once).
+      if (isAuthFailure(String(error))) offerLogin(this.logger, String(error));
+      throw error;
     });
+    if (models.length === 0 && authFailure) {
+      offerLogin(this.logger, authFailure);
+      // An empty list kept for the next start would hide Claude's models after a login.
+      return this.useModels(models);
+    }
     const temporary = `${this.modelsPath}.${process.pid}.tmp`;
     void writeFile(temporary, JSON.stringify({ version: packageVersion(), models }), { mode: 0o600 }).then(() => rename(temporary, this.modelsPath)).catch(() => undefined);
     return this.useModels(models);

@@ -159,6 +159,14 @@ async function* answer(prompt: Message, options: Message, transcript: Transcript
     yield* finish("");
     return;
   }
+  // Like Claude Code signed out: a synthetic assistant message with the error, then an error result with the same words.
+  if (text === "while signed out") {
+    const said = "Not logged in · Please run /login";
+    yield base(sessionId, { type: "assistant", error: "authentication_failed", message: { id: `msg_${randomUUID().slice(0, 8)}`, role: "assistant", model: "<synthetic>", content: [{ type: "text", text: said }], stop_reason: "stop_sequence", usage: { input_tokens: 0, output_tokens: 0 } } });
+    yield base(sessionId, { type: "result", subtype: "success", is_error: true, result: said, total_cost_usd: 0, user_message_uuids: [uuid] });
+    yield base(sessionId, { type: "system", subtype: "session_state_changed", state: "idle" });
+    return;
+  }
   // Like a `cd` Claude's Bash runs: the session's later records carry the new cwd.
   const cd = /^cd (\S+)$/u.exec(text);
   if (cd) transcript.cwd = cd[1]!;

@@ -5,8 +5,8 @@
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { atomicWrite } from "./files.js";
 
 export const LAUNCHER_SIDECAR = "ccodex-launcher.cfg";
@@ -162,4 +162,87 @@ export function restoreWindowsEnvironment(record: WindowsEnvironment): void {
 /** A copy of a user file setup is about to change, beside it (once per file and setup run). */
 export function backupFile(path: string): void {
   if (existsSync(path)) copyFileSync(path, `${path}.ccodex-backup-${new Date().toISOString().replace(/[:.]/gu, "-")}`);
+}
+
+/** Whether `dir` is on this process's PATH (a terminal opened before setup keeps its old PATH). */
+export function onProcessPath(dir: string): boolean {
+  return (process.env.PATH ?? "").split(";").some((entry) => entry && sameEntry(entry, dir));
+}
+
+/** How to run `<name> <args>` from a terminal: by name when `bin` is on PATH here, else by full path. */
+export function commandHint(bin: string, name: "ccodex" | "codex", args: string): string {
+  return onProcessPath(bin) ? `${name} ${args}` : `"${join(bin, `${name}.exe`)}" ${args}`;
+}
+
+export const LOGIN_CMD = "Log in to Claude.cmd";
+export const LOGIN_SHORTCUT_NAME = "CCodex - Log in to Claude";
+
+/** The Start menu entry and the double-clickable script behind it, as the manifest records them. */
+export interface WindowsLogin {
+  readonly cmd: string;
+  readonly shortcut: string;
+}
+
+/** How to log in to Claude without typing a long command: the Start menu entry first, then the command. */
+export function loginHint(bin: string): string {
+  return `Start menu → ${LOGIN_SHORTCUT_NAME}, or run: ${commandHint(bin, "ccodex", "auth claude")}`;
+}
+
+const LOGIN_SCRIPT = [
+  "@echo off",
+  `title ${LOGIN_SHORTCUT_NAME}`,
+  "\"%~dp0ccodex.exe\" auth claude",
+  "if errorlevel 1 (",
+  "  echo.",
+  "  echo Claude login did not finish ^(exit code %errorlevel%^). Close this window and open it again to retry.",
+  ") else (",
+  "  echo.",
+  "  echo You are logged in to Claude. Close this window, then use Claude models in the Codex app.",
+  ")",
+  "echo.",
+  "pause",
+  "",
+].join("\r\n");
+
+const SHORTCUT_SCRIPT = `$ErrorActionPreference = 'Stop'
+New-Item -ItemType Directory -Force (Split-Path -Parent $env:CCODEX_SHORTCUT) | Out-Null
+$link = (New-Object -ComObject WScript.Shell).CreateShortcut($env:CCODEX_SHORTCUT)
+$link.TargetPath = $env:CCODEX_SHORTCUT_TARGET
+$link.WorkingDirectory = Split-Path -Parent $env:CCODEX_SHORTCUT_TARGET
+$link.Description = 'Log in to Claude for Claude models in the Codex app (CCodex)'
+$link.Save()
+'ok'`;
+
+function startMenuShortcut(): string {
+  const appData = process.env.APPDATA ?? join(process.env.USERPROFILE ?? "", "AppData", "Roaming");
+  return join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "CCodex", `${LOGIN_SHORTCUT_NAME}.lnk`);
+}
+
+/** `bin\Log in to Claude.cmd` and its Start menu shortcut; the script's hash joins the launchers' for uninstall. */
+export function installLoginShortcut(bin: string): { login: WindowsLogin; hash: string } {
+  const cmd = join(bin, LOGIN_CMD);
+  atomicWrite(cmd, LOGIN_SCRIPT, 0o600);
+  const shortcut = startMenuShortcut();
+  if (powershell(SHORTCUT_SCRIPT, { CCODEX_SHORTCUT: shortcut, CCODEX_SHORTCUT_TARGET: cmd }) !== "ok") {
+    process.stderr.write(`CCodex setup warning: could not create the Start menu entry ${shortcut}; double-click ${cmd} instead.\n`);
+  }
+  return { login: { cmd, shortcut }, hash: sha256(LOGIN_SCRIPT) };
+}
+
+export function removeLoginShortcut(login: WindowsLogin): void {
+  rmSync(login.shortcut, { force: true });
+  try { rmdirSync(dirname(login.shortcut)); } catch { /* not empty, or gone */ }
+  rmSync(login.cmd, { force: true });
+}
+
+/** Leftovers of interrupted setups (`<version>.installing-<pid>`, `<version>.old-<pid>`) whose setup is gone. */
+export function removeStaleInstalls(versions: string, alive: (pid: number) => boolean): void {
+  for (const name of readdirSync(versions)) {
+    const pid = /\.(?:installing|old)-(\d+)$/u.exec(name)?.[1];
+    if (!pid || Number(pid) === process.pid || alive(Number(pid))) continue;
+    try {
+      rmSync(join(versions, name), { recursive: true, force: true });
+      process.stdout.write(`Removed ${name}, left by an earlier setup that did not finish.\n`);
+    } catch { /* in use: the next setup retries */ }
+  }
 }

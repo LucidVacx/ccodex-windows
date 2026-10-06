@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { fakeClaude, fakeQuery, fakeStartup } from "../fixtures/fakeClaude.js";
 import { registryEntry } from "../fixtures/platform.js";
 import { startTestGateway, type Client, type TestGateway } from "./harness.js";
+import { authFailureMessage, loginWindow } from "../../src/claude/login.js";
 
 process.env.CLAUDE_CONFIG_DIR = mkdtempSync(join(tmpdir(), "ccodex-claude-"));
 process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "ccodex-codex-home-"));
@@ -15,6 +16,8 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   startup: fakeStartup,
 }));
 vi.setConfig({ testTimeout: 30_000 });
+// Never a real login window from a test.
+loginWindow.open = vi.fn();
 
 const CLAUDE = "claude:claude-opus-5-5";
 const text = (value: string) => [{ type: "text", text: value, text_elements: [] }];
@@ -1509,6 +1512,15 @@ describe("gateway (black box: fake stock + fake Claude)", () => {
     const { turn } = await client.waitFor("turn/completed", (params) => params.threadId === threadId && params.turn.status !== "completed");
     expect(turn.status).toBe("failed");
     expect(turn.error.message).toContain("spawn claude EAGAIN");
+  });
+
+  it("fails a Claude turn of a signed-out Claude with how to sign in, not Claude's own words", async () => {
+    const threadId = await claudeThread();
+    const done = await client.turn(threadId, "while signed out");
+    expect(done.turn.status).toBe("failed");
+    expect(done.turn.error.message).toBe(authFailureMessage());
+    const said = client.notifications("item/completed", threadId).map((message) => message.params.item).filter((item) => item.type === "agentMessage");
+    expect(said).toEqual([]);
   });
 
   it("fails a Claude turn with Claude's error when Claude can't start, and the next turn starts the chat anew", async () => {

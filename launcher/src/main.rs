@@ -88,6 +88,7 @@ fn main() -> ExitCode {
         return fail(1, &format!("CCodex is not activated ({} is missing). Run: ccodex setup", script.display()));
     }
 
+    windows::keep_std_handles_private();
     let mut child = match Command::new(&node)
         .arg(&script)
         .args(&args)
@@ -147,6 +148,24 @@ mod windows {
         fn SetInformationJobObject(job: Handle, class: i32, info: *const c_void, length: u32) -> i32;
         fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
         fn SetConsoleCtrlHandler(handler: Option<unsafe extern "system" fn(u32) -> i32>, add: i32) -> i32;
+        fn GetStdHandle(which: u32) -> Handle;
+        fn SetHandleInformation(handle: Handle, mask: u32, flags: u32) -> i32;
+    }
+
+    const STD_HANDLES: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+
+    /// Node gets inheritable duplicates of the launcher's std handles from std's spawn; the originals must not be
+    /// inheritable too, or every process Node starts (the detached daemon) holds the caller's pipes open for good.
+    pub fn keep_std_handles_private() {
+        for which in STD_HANDLES {
+            unsafe {
+                let handle = GetStdHandle(which);
+                if !handle.is_null() && handle as isize != -1 {
+                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
     }
 
     /// Ctrl+C reaches every process on the console: the launcher outlives it so Node decides, and reports its exit.
@@ -178,4 +197,5 @@ mod windows {
 #[cfg(not(windows))]
 mod windows {
     pub fn bind_to_launcher(_child: &std::process::Child) {}
+    pub fn keep_std_handles_private() {}
 }
