@@ -9,6 +9,14 @@ and the Codex CLI run Claude models next to GPT.*
 
 </div>
 
+> [!IMPORTANT]
+> **This fork adds Windows 11 support** to [gkorepanov/ccodex](https://github.com/gkorepanov/ccodex).
+> On Windows, download this repository (*Code → Download ZIP*, or `git clone`), then
+> double-click `scripts\Install CCodex.cmd`. See [Windows](#windows) for requirements and
+> what it changes. macOS and Linux behave exactly as upstream.
+
+macOS / Linux:
+
 ```sh
 curl -fsSL https://github.com/gkorepanov/ccodex/releases/latest/download/install.sh | sh
 ```
@@ -73,7 +81,7 @@ Codex unchanged. No CCodex servers, no telemetry; MIT-licensed.
 
 | | |
 |---|---|
-| **OS** | macOS 11+ on Apple silicon · Linux x64 or arm64 with glibc ≥ 2.31 (no Alpine/musl) · Bash, Zsh or Fish |
+| **OS** | macOS 11+ on Apple silicon · Linux x64 or arm64 with glibc ≥ 2.31 (no Alpine/musl) · Bash, Zsh or Fish · Windows 11 x64 ([below](#windows)) |
 | **Node.js** | `>=22.13 <27` (22 or 24 LTS recommended), npm `>=10` |
 | **Codex CLI** | any recent version; installed for you if missing. Tested with `0.156` and `0.157` |
 | **Claude Code** | nothing to install: the Agent SDK brings it (`0.3.284` / Claude Code `2.1.284`) |
@@ -138,9 +146,15 @@ codex app-server daemon restart
 
 ### Windows
 
-Windows 11 (x64) installs from a checkout of this repository; it needs Node.js 22.13+ (or 24)
-and Rust (`cargo`) to build the launcher. Double-click `scripts\Install CCodex.cmd` (nothing to
-type; the window stays open at the end), or run:
+Windows 11 (x64) installs from a copy of this repository (*Code → Download ZIP* and extract
+it, or `git clone`). It needs:
+
+- [Node.js](https://nodejs.org) 22.13+ or 24 LTS;
+- [Rust](https://rustup.rs) (`cargo`), to build the small launcher;
+- the Codex desktop app (Microsoft Store) and a Claude subscription.
+
+Double-click `scripts\Install CCodex.cmd` (nothing to type; the window stays open at the end;
+if Windows warns about a downloaded file, choose *Run* / *More info → Run anyway*), or run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
@@ -175,7 +189,8 @@ Remove it with `scripts\Uninstall CCodex.cmd` (or
 
 Known limitations: stopping CCodex force-closes its processes (no graceful shutdown on
 Windows); mobile remote control (relay) not yet supported; the gateway's named pipe is
-per-user by name, intended for single-user machines.
+per-user by name, intended for single-user machines. Report Windows issues
+[here](https://github.com/LucidVacx/ccodex-windows/issues).
 
 Claude login: CCodex runs your own, unmodified Claude Code (`claude.exe`) signed in with your
 own subscription, and never reads or forwards its credentials. Anthropic's rules for
